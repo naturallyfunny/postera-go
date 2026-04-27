@@ -1,4 +1,4 @@
-module postera
+module go.naturallyfunny.dev/postera
 
 go 1.25.0
 
