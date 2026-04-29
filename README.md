@@ -74,5 +74,3 @@ tools, _ := adk.New(agentTool)
 - `/cloudtasks` : GCP Cloud Tasks Enqueuer implementation.
 - `/agent` : Framework-agnostic adapter for AI agents.
 - `/adk` : Specific integration for Google Agent Development Kit.
-
-© 2025 Postera Contributors.
