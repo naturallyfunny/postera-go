@@ -1,4 +1,4 @@
-```
+```text
 ██████╗  ██████╗ ███████╗████████╗███████╗██████╗  █████╗
 ██╔══██╗██╔═══██╗██╔════╝╚══██╔══╝██╔════╝██╔══██╗██╔══██╗
 ██████╔╝██║   ██║███████╗   ██║   █████╗  ██████╔╝███████║
@@ -7,14 +7,22 @@
 ╚═╝      ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝
 ```
 
-An orchestrator for scheduled tasks (prospective memory) that ensures synchronization between a persistence layer (Registry) and a scheduler (Enqueuer).
+A Go library providing "Prospective Memory" capabilities for AI Agents. It enables agents to schedule future actions—self-reminders or user-assigned tasks—with guaranteed consistency between storage and execution triggers.
 
 ## Key Features
 
-- **Atomic-like Sync**: Robust synchronization between your Database (e.g., PostgreSQL) and Task Queue (e.g., Google Cloud Tasks) featuring a best-effort rollback mechanism.
-- **Identity-Agnostic**: Supports multi-tenancy natively via context namespaces, ensuring secure data partition and isolation.
-- **Centralized Time Handling**: All timestamps are automatically converted to and processed in UTC to prevent timezone drift issues.
-- **Expressive Queries**: Built-in instant queries for easy schedule extraction (e.g., Today, Last Week, Incoming Today).
+- **Prospective Memory**: Empowers agents to "remember to act" at specific future times.
+- **Atomic-ish Orchestration**: Synchronizes Registry (Persistence) and Enqueuer (Scheduler) with automatic best-effort rollbacks.
+- **Identity Agnostic**: Secure multi-tenancy via the Namespace via Context pattern.
+- **Cloud Ready**: Out-of-the-box implementations for GCP Cloud Tasks and PostgreSQL.
+- **ADK Integrated**: Native support for the Google Agent Development Kit.
+
+## Architecture
+
+Postera coordinates through a central orchestrator called Postarius, managing two primary interfaces:
+
+- **Registry**: Handles durable persistence of memory entries (e.g., PostgreSQL).
+- **Enqueuer**: Schedules infrastructure-level triggers (e.g., GCP Cloud Tasks).
 
 ## Installation
 
@@ -22,76 +30,49 @@ An orchestrator for scheduled tasks (prospective memory) that ensures synchroniz
 go get go.naturallyfunny.dev/postera
 ```
 
-## Core Concepts
+## Quick Start
 
-- **Postarius**: The main orchestrator component bridging the `Registry` and the `Enqueuer`.
-- **Posterum**: The scheduled memory/task entity containing the payload (`Body`) and execution schedule (`ExecuteAt`).
-- **Registry**: The interface for permanent storage/persistence.
-- **Enqueuer**: The interface for the queue/scheduler processor.
-
-## Usage
-
-### 1. Initialization
+### 1. Initialize Postarius
 
 ```go
-package main
+// Setup providers
+reg, _ := postgres.NewRegistry(ctx, dbPool, postgres.WithAutoMigrate())
+enq, _ := cloudtasks.NewEnqueuer(ctx, projectID, locationID, queueID, targetURL, saEmail)
 
-import (
-	"go.naturallyfunny.dev/postera"
-	// Import your preferred registry and enqueuer adapters
-	// "go.naturallyfunny.dev/postera/postgres"
-	// "go.naturallyfunny.dev/postera/cloudtasks"
-)
-
-func main() {
-	// 1. Setup Registry and Enqueuer
-	// reg := postgres.NewRegistry(dbPool)
-	// enq := cloudtasks.NewEnqueuer(client)
-
-	// 2. Initialize Postarius
-	// p := postera.New(reg, enq)
-}
+// Create the orchestrator
+postarius := postera.New(reg, enq)
 ```
 
-### 2. Scheduling a Task
+### 2. Schedule a Memory (Posterum)
 
 ```go
-ctx := context.Background()
+// Inject identity into context
+ctx = postera.WithNamespace(ctx, "user-id-123")
 
-// (Optional) Attach a namespace for multi-tenancy
-ctx = postera.WithNamespace(ctx, "tenant-1")
-
-// Schedule a task 24 hours from now
-task := postera.Posterum{
-	Body:      []byte(`{"message": "hello"}`),
-	ExecuteAt: time.Now().Add(24 * time.Hour),
-}
-
-saved, err := p.Create(ctx, task)
-if err != nil {
-	// Handle error, e.g.: errors.Is(err, postera.ErrInvalidInput)
-}
+// Create the reminder
+p, err := postarius.Create(ctx, postera.Posterum{
+    Body:      []byte("Follow up with client about the proposal"),
+    ExecuteAt: time.Now().Add(48 * time.Hour),
+})
 ```
 
-### 3. Managing Schedules
+### 3. ADK Integration (Agent Tools)
+
+Expose capabilities directly to LLMs using the adk package:
 
 ```go
-// Retrieve a schedule by its ID
-item, err := p.Get(ctx, saved.ID)
+agentTool := agent.New(postarius)
+tools, _ := adk.New(agentTool)
 
-// Remove a schedule (cancels from the queue and deletes from the registry)
-err = p.Remove(ctx, saved.ID)
+// Register tools.All() with your agent framework
 ```
 
-### 4. Queries & Filters
+## Project Structure
 
-```go
-// List schedules that are running or will run today
-incoming, err := p.ListIncomingToday(ctx)
+- `/` : Core interfaces and the Postarius orchestrator.
+- `/postgres` : PostgreSQL Registry implementation.
+- `/cloudtasks` : GCP Cloud Tasks Enqueuer implementation.
+- `/agent` : Framework-agnostic adapter for AI agents.
+- `/adk` : Specific integration for Google Agent Development Kit.
 
-// List all schedules from the last 7 days
-lastWeek, err := p.ListLastWeek(ctx)
-
-// List all schedules (including past ones) for today
-today, err := p.ListToday(ctx)
-```
+© 2025 Postera Contributors.
