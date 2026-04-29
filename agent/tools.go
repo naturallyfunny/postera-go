@@ -208,6 +208,32 @@ func (t *Tool) ListByDate(ctx context.Context, args ListByDateArgs) ([]postera.P
 	return results, nil
 }
 
+// ListIncoming returns all Posterum entries scheduled to execute at or after
+// the present instant.
+//
+// ctx must carry a namespace via postera.WithNamespace when the backing
+// Registry enforces multi-tenant isolation.
+func (t *Tool) ListIncoming(ctx context.Context) ([]postera.Posterum, error) {
+	results, err := t.postarius.ListIncoming(ctx)
+	if err != nil {
+		return nil, normalizeError(err)
+	}
+	return results, nil
+}
+
+// ListToday returns all Posterum entries scheduled within the current UTC
+// calendar day.
+//
+// ctx must carry a namespace via postera.WithNamespace when the backing
+// Registry enforces multi-tenant isolation.
+func (t *Tool) ListToday(ctx context.Context) ([]postera.Posterum, error) {
+	results, err := t.postarius.ListToday(ctx)
+	if err != nil {
+		return nil, normalizeError(err)
+	}
+	return results, nil
+}
+
 // resolveLocation loads the *time.Location for the given IANA name. When tz
 // is empty and a default timezone was registered, the default is returned.
 // An empty tz with no default is a validation error returned to the agent.
