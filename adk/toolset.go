@@ -53,19 +53,9 @@ type listOutput struct {
 	Entries []posterumView `json:"entries"`
 }
 
-// ToolSet holds the five ADK function tools that expose an agent.ToolSet to
-// a Google ADK agent. Access individual tools via the struct fields.
-type ToolSet struct {
-	Create       adktool.Tool
-	List         adktool.Tool
-	ListByDate   adktool.Tool
-	ListIncoming adktool.Tool
-	ListToday    adktool.Tool
-}
-
-// NewToolSet builds all five ADK function tools from ts and returns them as a
-// ToolSet. Returns an error if any tool fails to register.
-func NewToolSet(ts *agent.ToolSet) (*ToolSet, error) {
+// Tools builds all five ADK function tools from ts and returns them as a
+// slice. Returns an error if any tool fails to register.
+func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 	create, err := functiontool.New(
 		functiontool.Config{
 			Name:        "create_posterum",
@@ -182,13 +172,7 @@ func NewToolSet(ts *agent.ToolSet) (*ToolSet, error) {
 		return nil, err
 	}
 
-	return &ToolSet{
-		Create:       create,
-		List:         list,
-		ListByDate:   listByDate,
-		ListIncoming: listIncoming,
-		ListToday:    listToday,
-	}, nil
+	return []adktool.Tool{create, list, listByDate, listIncoming, listToday}, nil
 }
 
 // contextWithNamespace extracts UserID from toolCtx and returns a
