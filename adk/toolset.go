@@ -1,4 +1,4 @@
-// Package adk wraps agent.Tool as Google ADK function tools backed by
+// Package adk wraps agent.ToolSet as Google ADK function tools backed by
 // functiontool.New. Identity is bridged automatically: UserID from the ADK
 // tool context is extracted and injected as the postera namespace so that
 // per-user data isolation is enforced without caller involvement.
@@ -53,9 +53,20 @@ type listOutput struct {
 	Entries []posterumView `json:"entries"`
 }
 
-// CreateTool returns an ADK function tool that schedules a new Posterum.
-func CreateTool(t *agent.Tool) (adktool.Tool, error) {
-	return functiontool.New(
+// ToolSet holds the five ADK function tools that expose an agent.ToolSet to
+// a Google ADK agent. Access individual tools via the struct fields.
+type ToolSet struct {
+	Create       adktool.Tool
+	List         adktool.Tool
+	ListByDate   adktool.Tool
+	ListIncoming adktool.Tool
+	ListToday    adktool.Tool
+}
+
+// NewToolSet builds all five ADK function tools from ts and returns them as a
+// ToolSet. Returns an error if any tool fails to register.
+func NewToolSet(ts *agent.ToolSet) (*ToolSet, error) {
+	create, err := functiontool.New(
 		functiontool.Config{
 			Name:        "create_posterum",
 			Description: "Schedule a future reminder to be delivered at a specific local date and time. Provide the datetime in the user's local timezone as an ISO 8601 string without a timezone suffix (e.g. 2024-01-15T09:00:00) and the timezone as an IANA name (e.g. Asia/Jakarta).",
@@ -65,7 +76,7 @@ func CreateTool(t *agent.Tool) (adktool.Tool, error) {
 			if err != nil {
 				return posterumView{}, err
 			}
-			p, err := t.Create(ctx, agent.CreateArgs{
+			p, err := ts.Create(ctx, agent.CreateArgs{
 				Body:      []byte(in.Body),
 				LocalTime: in.LocalTime,
 				Timezone:  in.Timezone,
@@ -76,12 +87,11 @@ func CreateTool(t *agent.Tool) (adktool.Tool, error) {
 			return toPosterumView(p), nil
 		},
 	)
-}
+	if err != nil {
+		return nil, err
+	}
 
-// ListTool returns an ADK function tool that queries Posterum entries within
-// an optional time window.
-func ListTool(t *agent.Tool) (adktool.Tool, error) {
-	return functiontool.New(
+	list, err := functiontool.New(
 		functiontool.Config{
 			Name:        "list_posterum",
 			Description: "List scheduled reminders within an optional time window. Leave from_local_time or to_local_time empty to leave that side unbounded. Provide datetime bounds in the user's local timezone as ISO 8601 strings without a timezone suffix (e.g. 2024-01-15T09:00:00) and the timezone as an IANA name (e.g. Asia/Jakarta).",
@@ -91,7 +101,7 @@ func ListTool(t *agent.Tool) (adktool.Tool, error) {
 			if err != nil {
 				return listOutput{}, err
 			}
-			entries, err := t.List(ctx, agent.ListArgs{
+			entries, err := ts.List(ctx, agent.ListArgs{
 				FromLocalTime: in.FromLocalTime,
 				ToLocalTime:   in.ToLocalTime,
 				Timezone:      in.Timezone,
@@ -102,12 +112,11 @@ func ListTool(t *agent.Tool) (adktool.Tool, error) {
 			return listOutput{Entries: toPosterumViews(entries)}, nil
 		},
 	)
-}
+	if err != nil {
+		return nil, err
+	}
 
-// ListByDateTool returns an ADK function tool that queries all Posterum
-// entries on a specific calendar day in the user's local timezone.
-func ListByDateTool(t *agent.Tool) (adktool.Tool, error) {
-	return functiontool.New(
+	listByDate, err := functiontool.New(
 		functiontool.Config{
 			Name:        "list_posterum_by_date",
 			Description: "List all reminders scheduled on a specific calendar day in the user's local timezone. Day boundaries are computed in the given timezone, so 'today' reflects the user's locale rather than the server's UTC day. Provide the date as an ISO 8601 string (e.g. 2024-01-15) and the timezone as an IANA name (e.g. Asia/Jakarta).",
@@ -117,7 +126,7 @@ func ListByDateTool(t *agent.Tool) (adktool.Tool, error) {
 			if err != nil {
 				return listOutput{}, err
 			}
-			entries, err := t.ListByDate(ctx, agent.ListByDateArgs{
+			entries, err := ts.ListByDate(ctx, agent.ListByDateArgs{
 				LocalDate: in.LocalDate,
 				Timezone:  in.Timezone,
 			})
@@ -127,12 +136,11 @@ func ListByDateTool(t *agent.Tool) (adktool.Tool, error) {
 			return listOutput{Entries: toPosterumViews(entries)}, nil
 		},
 	)
-}
+	if err != nil {
+		return nil, err
+	}
 
-// ListIncomingTool returns an ADK function tool that lists all Posterum
-// entries scheduled to execute at or after the current instant.
-func ListIncomingTool(t *agent.Tool) (adktool.Tool, error) {
-	return functiontool.New(
+	listIncoming, err := functiontool.New(
 		functiontool.Config{
 			Name:        "list_incoming_posterum",
 			Description: "List all reminders that are scheduled to execute at or after the current instant. Use this to show the user what future reminders are pending.",
@@ -142,19 +150,18 @@ func ListIncomingTool(t *agent.Tool) (adktool.Tool, error) {
 			if err != nil {
 				return listOutput{}, err
 			}
-			entries, err := t.ListIncoming(ctx)
+			entries, err := ts.ListIncoming(ctx)
 			if err != nil {
 				return listOutput{}, err
 			}
 			return listOutput{Entries: toPosterumViews(entries)}, nil
 		},
 	)
-}
+	if err != nil {
+		return nil, err
+	}
 
-// ListTodayTool returns an ADK function tool that lists all Posterum entries
-// scheduled within the current UTC calendar day.
-func ListTodayTool(t *agent.Tool) (adktool.Tool, error) {
-	return functiontool.New(
+	listToday, err := functiontool.New(
 		functiontool.Config{
 			Name:        "list_today_posterum",
 			Description: "List all reminders scheduled within the current UTC calendar day, both past and future. Use this when the user asks what is on today's schedule.",
@@ -164,13 +171,24 @@ func ListTodayTool(t *agent.Tool) (adktool.Tool, error) {
 			if err != nil {
 				return listOutput{}, err
 			}
-			entries, err := t.ListToday(ctx)
+			entries, err := ts.ListToday(ctx)
 			if err != nil {
 				return listOutput{}, err
 			}
 			return listOutput{Entries: toPosterumViews(entries)}, nil
 		},
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ToolSet{
+		Create:       create,
+		List:         list,
+		ListByDate:   listByDate,
+		ListIncoming: listIncoming,
+		ListToday:    listToday,
+	}, nil
 }
 
 // contextWithNamespace extracts UserID from toolCtx and returns a
