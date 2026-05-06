@@ -5,9 +5,9 @@
 // operation unchanged.
 //
 // Namespace isolation is identity-agnostic: callers inject the namespace once
-// into the context via postera.WithNamespace; the Tool passes that context
+// into the context via postera.WithNamespace; the Agent passes that context
 // through to Postarius, which threads it to the Registry and Enqueuer. The
-// Tool itself never reads or interprets namespace values.
+// Agent itself never reads or interprets namespace values.
 //
 // Callers running in environments without system timezone data should import
 // the bundled database:
@@ -36,18 +36,18 @@ const timeLayout = "2006-01-02T15:04:05"
 // fields.
 const dateLayout = "2006-01-02"
 
-// Tool is an SDK-agnostic adapter that bridges an AI agent to
+// Agent is an SDK-agnostic adapter that bridges an AI agent to
 // *postera.Postarius. It converts human-readable time strings into precise
 // time.Time values before forwarding calls to the underlying orchestrator.
 //
-// A *Tool is safe for concurrent use.
-type Tool struct {
+// A *Agent is safe for concurrent use.
+type Agent struct {
 	postarius *postera.Postarius
 	defaultTZ *time.Location
 }
 
-// Option configures a Tool at construction time.
-type Option func(*Tool)
+// Option configures an Agent at construction time.
+type Option func(*Agent)
 
 // WithDefaultTimezone registers loc as the fallback IANA location used when
 // an agent call omits the Timezone field. Without this option, a missing
@@ -58,23 +58,23 @@ func WithDefaultTimezone(loc *time.Location) Option {
 	if loc == nil {
 		panic("agent: WithDefaultTimezone: loc must not be nil")
 	}
-	return func(t *Tool) {
-		t.defaultTZ = loc
+	return func(a *Agent) {
+		a.defaultTZ = loc
 	}
 }
 
-// New returns a Tool backed by p.
+// New returns an Agent backed by p.
 //
 // Panics if p is nil.
-func New(p *postera.Postarius, opts ...Option) *Tool {
+func New(p *postera.Postarius, opts ...Option) *Agent {
 	if p == nil {
 		panic("agent: New: p must not be nil")
 	}
-	t := &Tool{postarius: p}
+	a := &Agent{postarius: p}
 	for _, o := range opts {
-		o(t)
+		o(a)
 	}
-	return t
+	return a
 }
 
 // CreateArgs holds the agent-supplied arguments for scheduling a new Posterum.
@@ -88,7 +88,7 @@ type CreateArgs struct {
 	LocalTime string
 
 	// Timezone is an IANA timezone name (e.g., "Asia/Jakarta").
-	// Falls back to the Tool's default timezone when empty.
+	// Falls back to the Agent's default timezone when empty.
 	Timezone string
 }
 
@@ -97,8 +97,8 @@ type CreateArgs struct {
 //
 // ctx must carry a namespace via postera.WithNamespace when the backing
 // Registry enforces multi-tenant isolation.
-func (t *Tool) Create(ctx context.Context, args CreateArgs) (postera.Posterum, error) {
-	loc, err := t.resolveLocation(args.Timezone)
+func (a *Agent) Create(ctx context.Context, args CreateArgs) (postera.Posterum, error) {
+	loc, err := a.resolveLocation(args.Timezone)
 	if err != nil {
 		return postera.Posterum{}, err
 	}
@@ -108,7 +108,7 @@ func (t *Tool) Create(ctx context.Context, args CreateArgs) (postera.Posterum, e
 		return postera.Posterum{}, err
 	}
 
-	result, err := t.postarius.Create(ctx, postera.Posterum{
+	result, err := a.postarius.Create(ctx, postera.Posterum{
 		Body:      args.Body,
 		ExecuteAt: executeAt,
 	})
@@ -131,7 +131,7 @@ type ListArgs struct {
 	ToLocalTime string
 
 	// Timezone is an IANA timezone name used to parse any non-empty bound.
-	// Falls back to the Tool's default timezone when empty.
+	// Falls back to the Agent's default timezone when empty.
 	Timezone string
 }
 
@@ -140,11 +140,11 @@ type ListArgs struct {
 //
 // ctx must carry a namespace via postera.WithNamespace when the backing
 // Registry enforces multi-tenant isolation.
-func (t *Tool) List(ctx context.Context, args ListArgs) ([]postera.Posterum, error) {
+func (a *Agent) List(ctx context.Context, args ListArgs) ([]postera.Posterum, error) {
 	var q postera.Query
 
 	if args.FromLocalTime != "" || args.ToLocalTime != "" {
-		loc, err := t.resolveLocation(args.Timezone)
+		loc, err := a.resolveLocation(args.Timezone)
 		if err != nil {
 			return nil, err
 		}
@@ -166,7 +166,7 @@ func (t *Tool) List(ctx context.Context, args ListArgs) ([]postera.Posterum, err
 		}
 	}
 
-	results, err := t.postarius.List(ctx, q)
+	results, err := a.postarius.List(ctx, q)
 	if err != nil {
 		return nil, normalizeError(err)
 	}
@@ -179,7 +179,7 @@ type ListByDateArgs struct {
 	LocalDate string
 
 	// Timezone is an IANA timezone name (e.g., "Asia/Jakarta").
-	// Falls back to the Tool's default timezone when empty.
+	// Falls back to the Agent's default timezone when empty.
 	Timezone string
 }
 
@@ -190,8 +190,8 @@ type ListByDateArgs struct {
 //
 // ctx must carry a namespace via postera.WithNamespace when the backing
 // Registry enforces multi-tenant isolation.
-func (t *Tool) ListByDate(ctx context.Context, args ListByDateArgs) ([]postera.Posterum, error) {
-	loc, err := t.resolveLocation(args.Timezone)
+func (a *Agent) ListByDate(ctx context.Context, args ListByDateArgs) ([]postera.Posterum, error) {
+	loc, err := a.resolveLocation(args.Timezone)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +201,7 @@ func (t *Tool) ListByDate(ctx context.Context, args ListByDateArgs) ([]postera.P
 		return nil, err
 	}
 
-	results, err := t.postarius.ListByDate(ctx, date)
+	results, err := a.postarius.ListByDate(ctx, date)
 	if err != nil {
 		return nil, normalizeError(err)
 	}
@@ -213,8 +213,8 @@ func (t *Tool) ListByDate(ctx context.Context, args ListByDateArgs) ([]postera.P
 //
 // ctx must carry a namespace via postera.WithNamespace when the backing
 // Registry enforces multi-tenant isolation.
-func (t *Tool) ListIncoming(ctx context.Context) ([]postera.Posterum, error) {
-	results, err := t.postarius.ListIncoming(ctx)
+func (a *Agent) ListIncoming(ctx context.Context) ([]postera.Posterum, error) {
+	results, err := a.postarius.ListIncoming(ctx)
 	if err != nil {
 		return nil, normalizeError(err)
 	}
@@ -226,8 +226,8 @@ func (t *Tool) ListIncoming(ctx context.Context) ([]postera.Posterum, error) {
 //
 // ctx must carry a namespace via postera.WithNamespace when the backing
 // Registry enforces multi-tenant isolation.
-func (t *Tool) ListToday(ctx context.Context) ([]postera.Posterum, error) {
-	results, err := t.postarius.ListToday(ctx)
+func (a *Agent) ListToday(ctx context.Context) ([]postera.Posterum, error) {
+	results, err := a.postarius.ListToday(ctx)
 	if err != nil {
 		return nil, normalizeError(err)
 	}
@@ -237,10 +237,10 @@ func (t *Tool) ListToday(ctx context.Context) ([]postera.Posterum, error) {
 // resolveLocation loads the *time.Location for the given IANA name. When tz
 // is empty and a default timezone was registered, the default is returned.
 // An empty tz with no default is a validation error returned to the agent.
-func (t *Tool) resolveLocation(tz string) (*time.Location, error) {
+func (a *Agent) resolveLocation(tz string) (*time.Location, error) {
 	if tz == "" {
-		if t.defaultTZ != nil {
-			return t.defaultTZ, nil
+		if a.defaultTZ != nil {
+			return a.defaultTZ, nil
 		}
 		return nil, fmt.Errorf("agent: timezone is required: provide a valid IANA timezone name (e.g., %q)", "Asia/Jakarta")
 	}

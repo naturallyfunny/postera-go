@@ -1,4 +1,4 @@
-// Package adk wraps agent.Tool as Google ADK function tools backed by
+// Package adk wraps agent.Agent as Google ADK function tools backed by
 // functiontool.New. Identity is bridged automatically: UserID from the ADK
 // tool context is extracted and injected as the postera namespace so that
 // per-user data isolation is enforced without caller involvement.
@@ -54,7 +54,7 @@ type listOutput struct {
 }
 
 // CreateTool returns an ADK function tool that schedules a new Posterum.
-func CreateTool(t *agent.Tool) (adktool.Tool, error) {
+func CreateTool(t *agent.Agent) (adktool.Tool, error) {
 	return functiontool.New(
 		functiontool.Config{
 			Name:        "create_posterum",
@@ -80,7 +80,7 @@ func CreateTool(t *agent.Tool) (adktool.Tool, error) {
 
 // ListTool returns an ADK function tool that queries Posterum entries within
 // an optional time window.
-func ListTool(t *agent.Tool) (adktool.Tool, error) {
+func ListTool(t *agent.Agent) (adktool.Tool, error) {
 	return functiontool.New(
 		functiontool.Config{
 			Name:        "list_posterum",
@@ -106,7 +106,7 @@ func ListTool(t *agent.Tool) (adktool.Tool, error) {
 
 // ListByDateTool returns an ADK function tool that queries all Posterum
 // entries on a specific calendar day in the user's local timezone.
-func ListByDateTool(t *agent.Tool) (adktool.Tool, error) {
+func ListByDateTool(t *agent.Agent) (adktool.Tool, error) {
 	return functiontool.New(
 		functiontool.Config{
 			Name:        "list_posterum_by_date",
@@ -131,7 +131,7 @@ func ListByDateTool(t *agent.Tool) (adktool.Tool, error) {
 
 // ListIncomingTool returns an ADK function tool that lists all Posterum
 // entries scheduled to execute at or after the current instant.
-func ListIncomingTool(t *agent.Tool) (adktool.Tool, error) {
+func ListIncomingTool(t *agent.Agent) (adktool.Tool, error) {
 	return functiontool.New(
 		functiontool.Config{
 			Name:        "list_incoming_posterum",
@@ -153,7 +153,7 @@ func ListIncomingTool(t *agent.Tool) (adktool.Tool, error) {
 
 // ListTodayTool returns an ADK function tool that lists all Posterum entries
 // scheduled within the current UTC calendar day.
-func ListTodayTool(t *agent.Tool) (adktool.Tool, error) {
+func ListTodayTool(t *agent.Agent) (adktool.Tool, error) {
 	return functiontool.New(
 		functiontool.Config{
 			Name:        "list_today_posterum",
