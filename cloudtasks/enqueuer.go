@@ -125,8 +125,8 @@ func (e *Enqueuer) Close() error {
 //	projects/{projectID}/locations/{locationID}/queues/{queueID}/tasks/{p.ID}
 //
 // allowing Cancel to address the same task by id alone. The task is
-// created with ScheduleTime set to p.ExecuteAt and an HttpRequest carrying
-// p.Body as its POST body. When a Service Account email was configured,
+// created with ScheduleTime set to p.RemindAt and an HttpRequest carrying
+// p.Message as its POST body. When a Service Account email was configured,
 // the request is signed with an OIDC token; any configured header mappings
 // are evaluated against ctx and merged into the task's HTTP headers.
 //
@@ -139,7 +139,7 @@ func (e *Enqueuer) Enqueue(ctx context.Context, p postera.Posterum) error {
 	httpReq := &taskspb.HttpRequest{
 		Url:        e.targetURL,
 		HttpMethod: taskspb.HttpMethod_POST,
-		Body:       p.Body,
+		Body:       []byte(p.Message),
 		Headers:    e.headersFromContext(ctx),
 	}
 	if e.serviceAccountEmail != "" {
@@ -154,7 +154,7 @@ func (e *Enqueuer) Enqueue(ctx context.Context, p postera.Posterum) error {
 		Parent: e.queuePath,
 		Task: &taskspb.Task{
 			Name:         e.taskName(p.ID),
-			ScheduleTime: timestamppb.New(p.ExecuteAt),
+			ScheduleTime: timestamppb.New(p.RemindAt),
 			MessageType: &taskspb.Task_HttpRequest{
 				HttpRequest: httpReq,
 			},

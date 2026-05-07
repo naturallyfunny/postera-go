@@ -122,21 +122,21 @@ func NewRegistry(ctx context.Context, db Querier, opts ...Option) (*Registry, er
 }
 
 // Save persists p. If an entry with the same ID already exists, Save
-// overwrites body and execute_at while preserving the original namespace
+// overwrites message and remind_at while preserving the original namespace
 // assignment — an ID produced by Postarius.Create belongs to exactly one
 // namespace for its lifetime.
 func (r *Registry) Save(ctx context.Context, p postera.Posterum) error {
 	ns := namespaceFrom(ctx)
 	_, err := r.db.Exec(ctx,
-		`INSERT INTO `+r.tableRef()+` (id, namespace, body, execute_at, created_at)
+		`INSERT INTO `+r.tableRef()+` (id, namespace, message, remind_at, created_at)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (id) DO UPDATE
-			SET body       = EXCLUDED.body,
-			    execute_at = EXCLUDED.execute_at`,
+			SET message   = EXCLUDED.message,
+			    remind_at = EXCLUDED.remind_at`,
 		p.ID,
 		ns,
-		p.Body,
-		p.ExecuteAt.UTC(),
+		p.Message,
+		p.RemindAt.UTC(),
 		p.CreatedAt.UTC(),
 	)
 	if err != nil {
@@ -152,7 +152,7 @@ func (r *Registry) Save(ctx context.Context, p postera.Posterum) error {
 func (r *Registry) Get(ctx context.Context, id string) (postera.Posterum, error) {
 	ns := namespaceFrom(ctx)
 	row := r.db.QueryRow(ctx,
-		`SELECT id, body, execute_at, created_at
+		`SELECT id, message, remind_at, created_at
 		FROM `+r.tableRef()+`
 		WHERE id = $1 AND namespace = $2`,
 		id, ns,
@@ -160,16 +160,16 @@ func (r *Registry) Get(ctx context.Context, id string) (postera.Posterum, error)
 
 	var (
 		p         postera.Posterum
-		executeAt time.Time
+		remindAt  time.Time
 		createdAt time.Time
 	)
-	if err := row.Scan(&p.ID, &p.Body, &executeAt, &createdAt); err != nil {
+	if err := row.Scan(&p.ID, &p.Message, &remindAt, &createdAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return postera.Posterum{}, fmt.Errorf("postgres: get %s: %w", id, postera.ErrNotFound)
 		}
 		return postera.Posterum{}, fmt.Errorf("postgres: get %s: %w", id, err)
 	}
-	p.ExecuteAt = executeAt.UTC()
+	p.RemindAt = remindAt.UTC()
 	p.CreatedAt = createdAt.UTC()
 	return p, nil
 }
@@ -194,7 +194,7 @@ func (r *Registry) Remove(ctx context.Context, id string) error {
 }
 
 // List returns Posterum entries for the current namespace within q's
-// half-open time range [q.From, q.To), ordered by ExecuteAt ascending.
+// half-open time range [q.From, q.To), ordered by RemindAt ascending.
 // A zero q.From omits the lower bound; a zero q.To omits the upper bound.
 func (r *Registry) List(ctx context.Context, q postera.Query) ([]postera.Posterum, error) {
 	ns := namespaceFrom(ctx)
@@ -210,13 +210,13 @@ func (r *Registry) List(ctx context.Context, q postera.Query) ([]postera.Posteru
 	for rows.Next() {
 		var (
 			p         postera.Posterum
-			executeAt time.Time
+			remindAt  time.Time
 			createdAt time.Time
 		)
-		if err := rows.Scan(&p.ID, &p.Body, &executeAt, &createdAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Message, &remindAt, &createdAt); err != nil {
 			return nil, fmt.Errorf("postgres: list: %w", err)
 		}
-		p.ExecuteAt = executeAt.UTC()
+		p.RemindAt = remindAt.UTC()
 		p.CreatedAt = createdAt.UTC()
 		result = append(result, p)
 	}
@@ -231,16 +231,16 @@ func (r *Registry) List(ctx context.Context, q postera.Query) ([]postera.Posteru
 // a live database.
 func (r *Registry) listQuery(namespace string, q postera.Query) (string, []any) {
 	args := []any{namespace}
-	sql := `SELECT id, body, execute_at, created_at FROM ` + r.tableRef() + ` WHERE namespace = $1`
+	sql := `SELECT id, message, remind_at, created_at FROM ` + r.tableRef() + ` WHERE namespace = $1`
 	if !q.From.IsZero() {
 		args = append(args, q.From.UTC())
-		sql += fmt.Sprintf(" AND execute_at >= $%d", len(args))
+		sql += fmt.Sprintf(" AND remind_at >= $%d", len(args))
 	}
 	if !q.To.IsZero() {
 		args = append(args, q.To.UTC())
-		sql += fmt.Sprintf(" AND execute_at < $%d", len(args))
+		sql += fmt.Sprintf(" AND remind_at < $%d", len(args))
 	}
-	sql += " ORDER BY execute_at ASC"
+	sql += " ORDER BY remind_at ASC"
 	return sql, args
 }
 
@@ -268,16 +268,24 @@ func (r *Registry) migrate(ctx context.Context) error {
 	return nil
 }
 
-// applyPlaceholders replaces {{table}} and {{index}} in a migration SQL string
-// with the safely-quoted identifiers for this Registry's table and its
-// composite index. Using explicit placeholders rather than replacing the
-// literal table name prevents accidental substitution inside comments or
-// string literals that coincidentally contain the default name.
+// applyPlaceholders replaces migration placeholders in sql with the
+// safely-quoted identifiers for this Registry's table and indexes. Using
+// explicit placeholders rather than replacing the literal table name prevents
+// accidental substitution inside comments or string literals that
+// coincidentally contain the default name.
+//
+// Supported placeholders:
+//   - {{table}}      — quoted table identifier (current schema)
+//   - {{index}}      — quoted index identifier for (namespace, remind_at ASC)
+//   - {{index_old}}  — quoted index identifier for (namespace, execute_at ASC),
+//     used by rename migrations to drop the pre-rename index
 func (r *Registry) applyPlaceholders(sql string) string {
-	indexRef := pgx.Identifier{"idx_" + r.tableName + "_namespace_execute_at"}.Sanitize()
+	indexOld := pgx.Identifier{"idx_" + r.tableName + "_namespace_execute_at"}.Sanitize()
+	indexNew := pgx.Identifier{"idx_" + r.tableName + "_namespace_remind_at"}.Sanitize()
 	return strings.NewReplacer(
-		"{{table}}", r.tableRef(),
-		"{{index}}", indexRef,
+		"{{table}}",     r.tableRef(),
+		"{{index}}",     indexNew,
+		"{{index_old}}", indexOld,
 	).Replace(sql)
 }
 
@@ -287,7 +295,7 @@ func (r *Registry) applyPlaceholders(sql string) string {
 // before any data operation is attempted.
 func (r *Registry) validateSchema(ctx context.Context) error {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, namespace, body, execute_at, created_at FROM `+r.tableRef()+` LIMIT 0`,
+		`SELECT id, namespace, message, remind_at, created_at FROM `+r.tableRef()+` LIMIT 0`,
 	)
 	if err != nil {
 		return fmt.Errorf("postgres: schema validation for table %q: %w", r.tableName, err)

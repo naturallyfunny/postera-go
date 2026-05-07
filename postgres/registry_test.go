@@ -30,11 +30,11 @@ func TestListQuery(t *testing.T) {
 			wantArgs: []any{"tenant"},
 			containsSQL: []string{
 				"namespace = $1",
-				"ORDER BY execute_at ASC",
+				"ORDER BY remind_at ASC",
 			},
 			absentSQL: []string{
-				"execute_at >=",
-				"execute_at <",
+				"remind_at >=",
+				"remind_at <",
 			},
 		},
 		{
@@ -43,10 +43,10 @@ func TestListQuery(t *testing.T) {
 			wantArgs: []any{"tenant", t0},
 			containsSQL: []string{
 				"namespace = $1",
-				"execute_at >= $2",
-				"ORDER BY execute_at ASC",
+				"remind_at >= $2",
+				"ORDER BY remind_at ASC",
 			},
-			absentSQL: []string{"execute_at <"},
+			absentSQL: []string{"remind_at <"},
 		},
 		{
 			name:     "to only",
@@ -54,10 +54,10 @@ func TestListQuery(t *testing.T) {
 			wantArgs: []any{"tenant", t1},
 			containsSQL: []string{
 				"namespace = $1",
-				"execute_at < $2",
-				"ORDER BY execute_at ASC",
+				"remind_at < $2",
+				"ORDER BY remind_at ASC",
 			},
-			absentSQL: []string{"execute_at >="},
+			absentSQL: []string{"remind_at >="},
 		},
 		{
 			name:     "both bounds",
@@ -65,9 +65,9 @@ func TestListQuery(t *testing.T) {
 			wantArgs: []any{"tenant", t0, t1},
 			containsSQL: []string{
 				"namespace = $1",
-				"execute_at >= $2",
-				"execute_at < $3",
-				"ORDER BY execute_at ASC",
+				"remind_at >= $2",
+				"remind_at < $3",
+				"ORDER BY remind_at ASC",
 			},
 		},
 	}

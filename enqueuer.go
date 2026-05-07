@@ -2,7 +2,7 @@ package postera
 
 import "context"
 
-// Enqueuer schedules a Posterum to fire at p.ExecuteAt.
+// Enqueuer schedules a Posterum to fire at p.RemindAt.
 //
 // Implementations are free to translate a Posterum into whatever transport
 // they target — for example, an HTTP task in GCP Cloud Tasks or an event in
@@ -12,7 +12,7 @@ import "context"
 //
 // Implementations must be safe for concurrent use.
 type Enqueuer interface {
-	// Enqueue schedules p to fire at p.ExecuteAt.
+	// Enqueue schedules p to fire at p.RemindAt.
 	Enqueue(ctx context.Context, p Posterum) error
 
 	// Cancel removes the previously scheduled entry for id. Cancel is

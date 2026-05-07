@@ -40,6 +40,6 @@ type Registry interface {
 	// Remove returns an error that wraps ErrNotFound.
 	Remove(ctx context.Context, id string) error
 
-	// List returns the entries matching q, ordered by ExecuteAt ascending.
+	// List returns the entries matching q, ordered by RemindAt ascending.
 	List(ctx context.Context, q Query) ([]Posterum, error)
 }

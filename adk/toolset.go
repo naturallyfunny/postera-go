@@ -16,33 +16,34 @@ import (
 	"go.naturallyfunny.dev/postera/agent"
 )
 
-// posterumView is the agent-facing representation of a Posterum.
-// Body is a string because agents work with text; Posterum.Body is []byte
-// internally and would be base64-encoded by ADK's JSON schema if left as-is.
-// Time fields are RFC 3339 strings so that ADK's schema inference produces a
-// human-readable type annotation rather than an opaque object.
+// posterumView is the agent-facing representation of a Posterum. Time fields
+// are naive ISO 8601 strings (no timezone suffix) localised to the user's
+// timezone: the LLM reads "22:00:00" and reasons about it naturally without
+// being exposed to UTC offsets or timezone identifiers.
 type posterumView struct {
 	ID        string `json:"id"`
-	Body      string `json:"body"`
-	ExecuteAt string `json:"execute_at"`
+	Message   string `json:"message"`
+	RemindAt  string `json:"remind_at"`
 	CreatedAt string `json:"created_at"`
 }
 
+// naiveTimeLayout formats a time.Time as a naive ISO 8601 datetime with no
+// timezone suffix. Keeping the layout local to this file prevents accidental
+// reuse with time.Parse (which would silently treat it as UTC).
+const naiveTimeLayout = "2006-01-02T15:04:05"
+
 type createInput struct {
-	Body      string `json:"body"`
+	Message   string `json:"message"`
 	LocalTime string `json:"local_time"`
-	Timezone  string `json:"timezone"`
 }
 
 type listInput struct {
 	FromLocalTime string `json:"from_local_time"`
 	ToLocalTime   string `json:"to_local_time"`
-	Timezone      string `json:"timezone"`
 }
 
 type listByDateInput struct {
 	LocalDate string `json:"local_date"`
-	Timezone  string `json:"timezone"`
 }
 
 type listIncomingInput struct{}
@@ -59,7 +60,7 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 	create, err := functiontool.New(
 		functiontool.Config{
 			Name:        "create_posterum",
-			Description: "Schedule a future reminder to be delivered at a specific local date and time. Provide the datetime in the user's local timezone as an ISO 8601 string without a timezone suffix (e.g. 2024-01-15T09:00:00) and the timezone as an IANA name (e.g. Asia/Jakarta).",
+			Description: "Schedule a future reminder for yourself at a specific local date and time. Provide the datetime in the user's local time as an ISO 8601 string without a timezone suffix (e.g. 2026-05-07T22:00:00). All times are automatically handled in the user's local timezone.",
 		},
 		func(toolCtx adktool.Context, in createInput) (posterumView, error) {
 			ctx, err := contextWithNamespace(toolCtx)
@@ -67,14 +68,13 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 				return posterumView{}, err
 			}
 			p, err := ts.Create(ctx, agent.CreateArgs{
-				Body:      []byte(in.Body),
+				Message:   in.Message,
 				LocalTime: in.LocalTime,
-				Timezone:  in.Timezone,
 			})
 			if err != nil {
 				return posterumView{}, err
 			}
-			return toPosterumView(p), nil
+			return toPosterumView(p, ts.LocationFromContext(ctx)), nil
 		},
 	)
 	if err != nil {
@@ -84,7 +84,7 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 	list, err := functiontool.New(
 		functiontool.Config{
 			Name:        "list_posterum",
-			Description: "List scheduled reminders within an optional time window. Leave from_local_time or to_local_time empty to leave that side unbounded. Provide datetime bounds in the user's local timezone as ISO 8601 strings without a timezone suffix (e.g. 2024-01-15T09:00:00) and the timezone as an IANA name (e.g. Asia/Jakarta).",
+			Description: "List scheduled reminders within an optional time window. Leave from_local_time or to_local_time empty to leave that side unbounded. Provide datetime bounds as ISO 8601 strings without a timezone suffix (e.g. 2024-01-15T09:00:00).",
 		},
 		func(toolCtx adktool.Context, in listInput) (listOutput, error) {
 			ctx, err := contextWithNamespace(toolCtx)
@@ -94,12 +94,11 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 			entries, err := ts.List(ctx, agent.ListArgs{
 				FromLocalTime: in.FromLocalTime,
 				ToLocalTime:   in.ToLocalTime,
-				Timezone:      in.Timezone,
 			})
 			if err != nil {
 				return listOutput{}, err
 			}
-			return listOutput{Entries: toPosterumViews(entries)}, nil
+			return listOutput{Entries: toPosterumViews(entries, ts.LocationFromContext(ctx))}, nil
 		},
 	)
 	if err != nil {
@@ -109,7 +108,7 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 	listByDate, err := functiontool.New(
 		functiontool.Config{
 			Name:        "list_posterum_by_date",
-			Description: "List all reminders scheduled on a specific calendar day in the user's local timezone. Day boundaries are computed in the given timezone, so 'today' reflects the user's locale rather than the server's UTC day. Provide the date as an ISO 8601 string (e.g. 2024-01-15) and the timezone as an IANA name (e.g. Asia/Jakarta).",
+			Description: "List all reminders scheduled on a specific calendar day. Day boundaries are computed in the user's local timezone. Provide the date as an ISO 8601 string (e.g. 2024-01-15).",
 		},
 		func(toolCtx adktool.Context, in listByDateInput) (listOutput, error) {
 			ctx, err := contextWithNamespace(toolCtx)
@@ -118,12 +117,11 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 			}
 			entries, err := ts.ListByDate(ctx, agent.ListByDateArgs{
 				LocalDate: in.LocalDate,
-				Timezone:  in.Timezone,
 			})
 			if err != nil {
 				return listOutput{}, err
 			}
-			return listOutput{Entries: toPosterumViews(entries)}, nil
+			return listOutput{Entries: toPosterumViews(entries, ts.LocationFromContext(ctx))}, nil
 		},
 	)
 	if err != nil {
@@ -144,7 +142,7 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 			if err != nil {
 				return listOutput{}, err
 			}
-			return listOutput{Entries: toPosterumViews(entries)}, nil
+			return listOutput{Entries: toPosterumViews(entries, ts.LocationFromContext(ctx))}, nil
 		},
 	)
 	if err != nil {
@@ -154,7 +152,7 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 	listToday, err := functiontool.New(
 		functiontool.Config{
 			Name:        "list_today_posterum",
-			Description: "List all reminders scheduled within the current UTC calendar day, both past and future. Use this when the user asks what is on today's schedule.",
+			Description: "List all reminders scheduled within the current calendar day in the user's local timezone, both past and future. Use this when the user asks what is on today's schedule.",
 		},
 		func(toolCtx adktool.Context, _ listTodayInput) (listOutput, error) {
 			ctx, err := contextWithNamespace(toolCtx)
@@ -165,7 +163,7 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 			if err != nil {
 				return listOutput{}, err
 			}
-			return listOutput{Entries: toPosterumViews(entries)}, nil
+			return listOutput{Entries: toPosterumViews(entries, ts.LocationFromContext(ctx))}, nil
 		},
 	)
 	if err != nil {
@@ -180,7 +178,8 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 //
 // toolCtx satisfies context.Context because tool.Context embeds
 // agent.ReadonlyContext which itself embeds context.Context. It is used as
-// the parent so that deadline and cancellation signals propagate correctly.
+// the parent so that deadline, cancellation, and any values set by upstream
+// middleware (e.g. timezone) propagate correctly into postera operations.
 func contextWithNamespace(toolCtx adktool.Context) (context.Context, error) {
 	userID := toolCtx.UserID()
 	if userID == "" {
@@ -189,19 +188,23 @@ func contextWithNamespace(toolCtx adktool.Context) (context.Context, error) {
 	return postera.WithNamespace(toolCtx, userID), nil
 }
 
-func toPosterumView(p postera.Posterum) posterumView {
+// toPosterumView converts a Posterum to its agent-facing representation,
+// formatting time fields in loc. loc must be non-nil; pass time.UTC when no
+// user timezone is available. Time strings are naive ISO 8601 (no suffix) so
+// the LLM reads them as local time without timezone noise.
+func toPosterumView(p postera.Posterum, loc *time.Location) posterumView {
 	return posterumView{
 		ID:        p.ID,
-		Body:      string(p.Body),
-		ExecuteAt: p.ExecuteAt.UTC().Format(time.RFC3339),
-		CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339),
+		Message:   p.Message,
+		RemindAt:  p.RemindAt.In(loc).Format(naiveTimeLayout),
+		CreatedAt: p.CreatedAt.In(loc).Format(naiveTimeLayout),
 	}
 }
 
-func toPosterumViews(entries []postera.Posterum) []posterumView {
+func toPosterumViews(entries []postera.Posterum, loc *time.Location) []posterumView {
 	views := make([]posterumView, len(entries))
 	for i, e := range entries {
-		views[i] = toPosterumView(e)
+		views[i] = toPosterumView(e, loc)
 	}
 	return views
 }

@@ -11,21 +11,21 @@ import (
 
 // ErrInvalidInput is returned by Postarius when a caller-supplied value
 // fails validation at the public API boundary (for example, a zero
-// ExecuteAt or a negative day count). It lets callers distinguish a
+// RemindAt or a negative day count). It lets callers distinguish a
 // programming error in their own code from an infrastructure failure
 // surfaced by a Registry or an Enqueuer using errors.Is.
 var ErrInvalidInput = errors.New("postera: invalid input")
 
 // Posterum is a single prospective memory: a scheduled future recall that
-// the agent will receive when ExecuteAt arrives.
+// the agent will receive when RemindAt arrives.
 //
 // ID and CreatedAt are populated by Postarius.Create; values supplied by
 // the caller are overwritten so that the orchestrator can guarantee a
 // single authoritative ID across the Registry and the Enqueuer.
 type Posterum struct {
 	ID        string
-	Body      []byte
-	ExecuteAt time.Time
+	Message   string
+	RemindAt  time.Time
 	CreatedAt time.Time
 }
 
@@ -87,7 +87,7 @@ func New(registry Registry, enqueuer Enqueuer) *Postarius {
 // persists it. Any ID or CreatedAt set by the caller is overwritten — the
 // orchestrator is the sole authority for these fields.
 //
-// posterum.ExecuteAt must be non-zero; Create returns an error wrapping
+// posterum.RemindAt must be non-zero; Create returns an error wrapping
 // ErrInvalidInput otherwise.
 //
 // If persistence fails after a successful enqueue, Create attempts a
@@ -95,8 +95,8 @@ func New(registry Registry, enqueuer Enqueuer) *Postarius {
 // context detached from the caller's cancellation so it can complete even if
 // the caller has already given up.
 func (p *Postarius) Create(ctx context.Context, posterum Posterum) (Posterum, error) {
-	if posterum.ExecuteAt.IsZero() {
-		return Posterum{}, fmt.Errorf("postera: create: ExecuteAt must be non-zero: %w", ErrInvalidInput)
+	if posterum.RemindAt.IsZero() {
+		return Posterum{}, fmt.Errorf("postera: create: RemindAt must be non-zero: %w", ErrInvalidInput)
 	}
 
 	posterum.ID = uuid.NewString()

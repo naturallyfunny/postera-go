@@ -9,6 +9,12 @@
 // through to Postarius, which threads it to the Registry and Enqueuer. The
 // ToolSet itself never reads or interprets namespace values.
 //
+// Timezone resolution is infrastructure-agnostic: callers may register a
+// context key via WithTimezoneFromContext, and the ToolSet reads the IANA
+// timezone string from that key on every operation. This decouples the
+// ToolSet from any specific HTTP framework or middleware. The ToolSet itself
+// never interprets timezone semantics beyond IANA name resolution.
+//
 // Callers running in environments without system timezone data should import
 // the bundled database:
 //
@@ -25,10 +31,10 @@ import (
 )
 
 // timeLayout is the expected datetime format for agent-supplied LocalTime
-// fields. Agents must NOT embed a timezone suffix: the timezone is a separate
-// field resolved through time.ParseInLocation, which anchors the result to
-// the user's IANA locale. Embedding an offset in the string would silently
-// override the explicit Timezone field and reintroduce the Server Time Leak
+// fields. Agents must NOT embed a timezone suffix: the timezone is resolved
+// separately through time.ParseInLocation, which anchors the result to the
+// user's IANA locale. Embedding an offset in the string would silently
+// override the resolved timezone and reintroduce the Server Time Leak
 // anti-pattern.
 const timeLayout = "2006-01-02T15:04:05"
 
@@ -42,16 +48,18 @@ const dateLayout = "2006-01-02"
 //
 // A *ToolSet is safe for concurrent use.
 type ToolSet struct {
-	postarius *postera.Postarius
-	defaultTZ *time.Location
+	postarius   *postera.Postarius
+	defaultTZ   *time.Location
+	timezoneKey any
 }
 
 // Option configures a ToolSet at construction time.
 type Option func(*ToolSet)
 
 // WithDefaultTimezone registers loc as the fallback IANA location used when
-// an agent call omits the Timezone field. Without this option, a missing
-// Timezone produces a validation error that the agent can self-correct.
+// a call omits the Timezone field and no timezone is found in the context.
+// Without this option, a missing timezone produces a validation error that
+// the agent can self-correct.
 //
 // Panics if loc is nil.
 func WithDefaultTimezone(loc *time.Location) Option {
@@ -60,6 +68,32 @@ func WithDefaultTimezone(loc *time.Location) Option {
 	}
 	return func(ts *ToolSet) {
 		ts.defaultTZ = loc
+	}
+}
+
+// WithTimezoneFromContext registers the context key under which the ToolSet
+// looks for an IANA timezone string on every operation. The value is read
+// dynamically per-request from the context passed to each method — it is
+// never read at construction time. This makes the option safe for concurrent
+// use across requests that carry different timezone values.
+//
+// The key is any comparable value; the corresponding context value must be a
+// non-empty string containing a valid IANA timezone name (e.g.
+// "Asia/Jakarta"). When the key is registered but the context carries no
+// value for it, resolution falls through to WithDefaultTimezone. When the
+// context carries a value but it is not a valid IANA name, resolveLocation
+// returns an error.
+//
+// The caller (not this package) is responsible for supplying the key; this
+// keeps agent independent of any specific middleware package.
+//
+// Panics if key is nil.
+func WithTimezoneFromContext(key any) Option {
+	if key == nil {
+		panic("agent: WithTimezoneFromContext: key must not be nil")
+	}
+	return func(ts *ToolSet) {
+		ts.timezoneKey = key
 	}
 }
 
@@ -79,38 +113,41 @@ func NewToolSet(p *postera.Postarius, opts ...Option) *ToolSet {
 
 // CreateArgs holds the agent-supplied arguments for scheduling a new Posterum.
 type CreateArgs struct {
-	// Body is the payload to be delivered at execution time.
-	Body []byte
+	// Message is the text content to be delivered at reminder time.
+	Message string
 
 	// LocalTime is an ISO 8601 datetime string in the user's local time,
 	// without a timezone suffix (e.g., "2024-01-15T09:00:00").
-	// The timezone is conveyed separately via the Timezone field.
+	// The timezone is conveyed separately via the Timezone field or resolved
+	// from the context via WithTimezoneFromContext.
 	LocalTime string
 
 	// Timezone is an IANA timezone name (e.g., "Asia/Jakarta").
-	// Falls back to the ToolSet's default timezone when empty.
+	// When empty, resolution falls through to the context timezone registered
+	// via WithTimezoneFromContext, then to the default timezone registered via
+	// WithDefaultTimezone.
 	Timezone string
 }
 
-// Create parses LocalTime in the location identified by Timezone, then
-// creates and enqueues a new Posterum via the underlying Postarius.
+// Create parses LocalTime in the resolved location, then creates and enqueues
+// a new Posterum via the underlying Postarius.
 //
 // ctx must carry a namespace via postera.WithNamespace when the backing
 // Registry enforces multi-tenant isolation.
 func (ts *ToolSet) Create(ctx context.Context, args CreateArgs) (postera.Posterum, error) {
-	loc, err := ts.resolveLocation(args.Timezone)
+	loc, err := ts.resolveLocation(ctx, args.Timezone)
 	if err != nil {
 		return postera.Posterum{}, err
 	}
 
-	executeAt, err := parseLocalTime(args.LocalTime, loc)
+	remindAt, err := parseLocalTime(args.LocalTime, loc)
 	if err != nil {
 		return postera.Posterum{}, err
 	}
 
 	result, err := ts.postarius.Create(ctx, postera.Posterum{
-		Body:      args.Body,
-		ExecuteAt: executeAt,
+		Message:  args.Message,
+		RemindAt: remindAt,
 	})
 	if err != nil {
 		return postera.Posterum{}, normalizeError(err)
@@ -131,7 +168,9 @@ type ListArgs struct {
 	ToLocalTime string
 
 	// Timezone is an IANA timezone name used to parse any non-empty bound.
-	// Falls back to the ToolSet's default timezone when empty.
+	// When empty, resolution falls through to the context timezone registered
+	// via WithTimezoneFromContext, then to the default timezone registered via
+	// WithDefaultTimezone.
 	Timezone string
 }
 
@@ -144,7 +183,7 @@ func (ts *ToolSet) List(ctx context.Context, args ListArgs) ([]postera.Posterum,
 	var q postera.Query
 
 	if args.FromLocalTime != "" || args.ToLocalTime != "" {
-		loc, err := ts.resolveLocation(args.Timezone)
+		loc, err := ts.resolveLocation(ctx, args.Timezone)
 		if err != nil {
 			return nil, err
 		}
@@ -179,19 +218,21 @@ type ListByDateArgs struct {
 	LocalDate string
 
 	// Timezone is an IANA timezone name (e.g., "Asia/Jakarta").
-	// Falls back to the ToolSet's default timezone when empty.
+	// When empty, resolution falls through to the context timezone registered
+	// via WithTimezoneFromContext, then to the default timezone registered via
+	// WithDefaultTimezone.
 	Timezone string
 }
 
 // ListByDate returns all Posterum entries scheduled on the calendar day of
-// LocalDate, with day boundaries computed in the location identified by
-// Timezone. This ensures that "today" or "tomorrow" resolves to the user's
-// local calendar day rather than the server's UTC day.
+// LocalDate, with day boundaries computed in the resolved location. This
+// ensures that "today" or "tomorrow" resolves to the user's local calendar
+// day rather than the server's UTC day.
 //
 // ctx must carry a namespace via postera.WithNamespace when the backing
 // Registry enforces multi-tenant isolation.
 func (ts *ToolSet) ListByDate(ctx context.Context, args ListByDateArgs) ([]postera.Posterum, error) {
-	loc, err := ts.resolveLocation(args.Timezone)
+	loc, err := ts.resolveLocation(ctx, args.Timezone)
 	if err != nil {
 		return nil, err
 	}
@@ -221,34 +262,80 @@ func (ts *ToolSet) ListIncoming(ctx context.Context) ([]postera.Posterum, error)
 	return results, nil
 }
 
-// ListToday returns all Posterum entries scheduled within the current UTC
-// calendar day.
+// ListToday returns all Posterum entries scheduled within the current
+// calendar day in the user's local timezone. Day boundaries are computed
+// using the location resolved from the context (via WithTimezoneFromContext),
+// the registered default timezone (via WithDefaultTimezone), or UTC when
+// neither is available.
 //
 // ctx must carry a namespace via postera.WithNamespace when the backing
 // Registry enforces multi-tenant isolation.
 func (ts *ToolSet) ListToday(ctx context.Context) ([]postera.Posterum, error) {
-	results, err := ts.postarius.ListToday(ctx)
+	loc := ts.LocationFromContext(ctx)
+	results, err := ts.postarius.ListByDate(ctx, time.Now().In(loc))
 	if err != nil {
 		return nil, normalizeError(err)
 	}
 	return results, nil
 }
 
-// resolveLocation loads the *time.Location for the given IANA name. When tz
-// is empty and a default timezone was registered, the default is returned.
-// An empty tz with no default is a validation error returned to the agent.
-func (ts *ToolSet) resolveLocation(tz string) (*time.Location, error) {
-	if tz == "" {
-		if ts.defaultTZ != nil {
-			return ts.defaultTZ, nil
+// LocationFromContext resolves the *time.Location for the current request.
+// It checks, in order: the IANA timezone string at the registered context key
+// (WithTimezoneFromContext), the registered default timezone
+// (WithDefaultTimezone), and finally time.UTC. It never returns nil.
+//
+// This method is intended for view-rendering code that always needs a
+// location and treats unavailability as a graceful fallback rather than an
+// error. For operations that require a valid timezone to parse user-supplied
+// time strings, use the internal resolveLocation which returns an error when
+// no timezone can be determined.
+func (ts *ToolSet) LocationFromContext(ctx context.Context) *time.Location {
+	if ts.timezoneKey != nil {
+		if v, ok := ctx.Value(ts.timezoneKey).(string); ok && v != "" {
+			if loc, err := time.LoadLocation(v); err == nil {
+				return loc
+			}
 		}
-		return nil, fmt.Errorf("agent: timezone is required: provide a valid IANA timezone name (e.g., %q)", "Asia/Jakarta")
 	}
-	loc, err := time.LoadLocation(tz)
-	if err != nil {
-		return nil, fmt.Errorf("agent: unknown timezone %q: must be a valid IANA timezone name (e.g., %q)", tz, "Asia/Jakarta")
+	if ts.defaultTZ != nil {
+		return ts.defaultTZ
 	}
-	return loc, nil
+	return time.UTC
+}
+
+// resolveLocation loads the *time.Location for the current operation.
+//
+// Priority:
+//  1. tz argument, if non-empty
+//  2. IANA string at ts.timezoneKey in ctx, if registered and present
+//  3. ts.defaultTZ, if registered
+//  4. error
+//
+// Unlike LocationFromContext, this method returns an error when no timezone
+// can be determined and when a context value is present but invalid — both
+// conditions indicate a programming error that the caller should surface
+// rather than silently absorbing.
+func (ts *ToolSet) resolveLocation(ctx context.Context, tz string) (*time.Location, error) {
+	if tz != "" {
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			return nil, fmt.Errorf("agent: unknown timezone %q: must be a valid IANA timezone name (e.g., %q)", tz, "Asia/Jakarta")
+		}
+		return loc, nil
+	}
+	if ts.timezoneKey != nil {
+		if v, ok := ctx.Value(ts.timezoneKey).(string); ok && v != "" {
+			loc, err := time.LoadLocation(v)
+			if err != nil {
+				return nil, fmt.Errorf("agent: timezone from context %q is not a valid IANA timezone name (e.g., %q)", v, "Asia/Jakarta")
+			}
+			return loc, nil
+		}
+	}
+	if ts.defaultTZ != nil {
+		return ts.defaultTZ, nil
+	}
+	return nil, fmt.Errorf("agent: timezone is required: provide a valid IANA timezone name (e.g., %q)", "Asia/Jakarta")
 }
 
 // parseLocalTime parses s as an ISO 8601 datetime without a timezone suffix,
