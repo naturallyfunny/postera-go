@@ -30,16 +30,15 @@ import (
 	"go.naturallyfunny.dev/postera"
 )
 
-// timeLayout is the expected datetime format for agent-supplied LocalTime
-// fields. Agents must NOT embed a timezone suffix: the timezone is resolved
-// separately through time.ParseInLocation, which anchors the result to the
-// user's IANA locale. Embedding an offset in the string would silently
+// timeLayout is the expected datetime format for agent-supplied RemindAt and
+// list-bound fields. Agents must NOT embed a timezone suffix: the timezone is
+// resolved separately through time.ParseInLocation, which anchors the result
+// to the user's IANA locale. Embedding an offset in the string would silently
 // override the resolved timezone and reintroduce the Server Time Leak
 // anti-pattern.
 const timeLayout = "2006-01-02T15:04:05"
 
-// dateLayout is the expected date-only format for agent-supplied LocalDate
-// fields.
+// dateLayout is the expected date-only format for agent-supplied Date fields.
 const dateLayout = "2006-01-02"
 
 // ToolSet is an SDK-agnostic adapter that bridges an AI agent to
@@ -116,20 +115,20 @@ type CreateArgs struct {
 	// Message is the text content to be delivered at reminder time.
 	Message string
 
-	// LocalTime is an ISO 8601 datetime string in the user's local time,
-	// without a timezone suffix (e.g., "2024-01-15T09:00:00").
-	// The timezone is conveyed separately via the Timezone field or resolved
-	// from the context via WithTimezoneFromContext.
-	LocalTime string
+	// RemindAt is an ISO 8601 datetime string without a timezone suffix
+	// (e.g., "2024-01-15T09:00:00"). The timezone is resolved via the
+	// Timezone field, the context key registered via WithTimezoneFromContext,
+	// or the default registered via WithDefaultTimezone.
+	RemindAt string
 
 	// Timezone is an IANA timezone name (e.g., "Asia/Jakarta").
 	// When empty, resolution falls through to the context timezone registered
-	// via WithTimezoneFromContext, then to the default timezone registered via
+	// via WithTimezoneFromContext, then to the default registered via
 	// WithDefaultTimezone.
 	Timezone string
 }
 
-// Create parses LocalTime in the resolved location, then creates and enqueues
+// Create parses RemindAt in the resolved location, then creates and enqueues
 // a new Posterum via the underlying Postarius.
 //
 // ctx must carry a namespace via postera.WithNamespace when the backing
@@ -140,15 +139,12 @@ func (ts *ToolSet) Create(ctx context.Context, args CreateArgs) (postera.Posteru
 		return postera.Posterum{}, err
 	}
 
-	remindAt, err := parseLocalTime(args.LocalTime, loc)
+	remindAt, err := parseLocalTime(args.RemindAt, loc)
 	if err != nil {
 		return postera.Posterum{}, err
 	}
 
-	result, err := ts.postarius.Create(ctx, postera.Posterum{
-		Message:  args.Message,
-		RemindAt: remindAt,
-	})
+	result, err := ts.postarius.Create(ctx, args.Message, remindAt)
 	if err != nil {
 		return postera.Posterum{}, normalizeError(err)
 	}
@@ -158,18 +154,18 @@ func (ts *ToolSet) Create(ctx context.Context, args CreateArgs) (postera.Posteru
 // ListArgs holds the agent-supplied arguments for a time-range query.
 // Either bound may be omitted; an absent bound is treated as open.
 type ListArgs struct {
-	// FromLocalTime is the inclusive lower bound as an ISO 8601 datetime string
-	// without a timezone suffix (e.g., "2024-01-15T09:00:00").
-	// Empty means no lower bound.
-	FromLocalTime string
+	// From is the inclusive lower bound as an ISO 8601 datetime string without
+	// a timezone suffix (e.g., "2024-01-15T09:00:00"). Empty means no lower
+	// bound.
+	From string
 
-	// ToLocalTime is the exclusive upper bound as an ISO 8601 datetime string
-	// without a timezone suffix. Empty means no upper bound.
-	ToLocalTime string
+	// To is the exclusive upper bound as an ISO 8601 datetime string without a
+	// timezone suffix. Empty means no upper bound.
+	To string
 
 	// Timezone is an IANA timezone name used to parse any non-empty bound.
 	// When empty, resolution falls through to the context timezone registered
-	// via WithTimezoneFromContext, then to the default timezone registered via
+	// via WithTimezoneFromContext, then to the default registered via
 	// WithDefaultTimezone.
 	Timezone string
 }
@@ -180,24 +176,24 @@ type ListArgs struct {
 // ctx must carry a namespace via postera.WithNamespace when the backing
 // Registry enforces multi-tenant isolation.
 func (ts *ToolSet) List(ctx context.Context, args ListArgs) ([]postera.Posterum, error) {
-	var q postera.Query
+	var q postera.TimeRange
 
-	if args.FromLocalTime != "" || args.ToLocalTime != "" {
+	if args.From != "" || args.To != "" {
 		loc, err := ts.resolveLocation(ctx, args.Timezone)
 		if err != nil {
 			return nil, err
 		}
 
-		if args.FromLocalTime != "" {
-			from, err := parseLocalTime(args.FromLocalTime, loc)
+		if args.From != "" {
+			from, err := parseLocalTime(args.From, loc)
 			if err != nil {
 				return nil, err
 			}
 			q.From = from
 		}
 
-		if args.ToLocalTime != "" {
-			to, err := parseLocalTime(args.ToLocalTime, loc)
+		if args.To != "" {
+			to, err := parseLocalTime(args.To, loc)
 			if err != nil {
 				return nil, err
 			}
@@ -214,20 +210,20 @@ func (ts *ToolSet) List(ctx context.Context, args ListArgs) ([]postera.Posterum,
 
 // ListByDateArgs holds the agent-supplied arguments for a date-scoped query.
 type ListByDateArgs struct {
-	// LocalDate is an ISO 8601 date string (e.g., "2024-01-15").
-	LocalDate string
+	// Date is an ISO 8601 date string (e.g., "2024-01-15").
+	Date string
 
 	// Timezone is an IANA timezone name (e.g., "Asia/Jakarta").
 	// When empty, resolution falls through to the context timezone registered
-	// via WithTimezoneFromContext, then to the default timezone registered via
+	// via WithTimezoneFromContext, then to the default registered via
 	// WithDefaultTimezone.
 	Timezone string
 }
 
 // ListByDate returns all Posterum entries scheduled on the calendar day of
-// LocalDate, with day boundaries computed in the resolved location. This
-// ensures that "today" or "tomorrow" resolves to the user's local calendar
-// day rather than the server's UTC day.
+// Date, with day boundaries computed in the resolved location. This ensures
+// that "today" or "tomorrow" resolves to the user's local calendar day rather
+// than the server's UTC day.
 //
 // ctx must carry a namespace via postera.WithNamespace when the backing
 // Registry enforces multi-tenant isolation.
@@ -237,7 +233,7 @@ func (ts *ToolSet) ListByDate(ctx context.Context, args ListByDateArgs) ([]poste
 		return nil, err
 	}
 
-	date, err := parseLocalDate(args.LocalDate, loc)
+	date, err := parseLocalDate(args.Date, loc)
 	if err != nil {
 		return nil, err
 	}
@@ -344,11 +340,11 @@ func (ts *ToolSet) resolveLocation(ctx context.Context, tz string) (*time.Locati
 // silently interpret s as UTC and produce a shifted moment.
 func parseLocalTime(s string, loc *time.Location) (time.Time, error) {
 	if s == "" {
-		return time.Time{}, fmt.Errorf("agent: local_time is required: provide a datetime string in format %q (e.g., %q)", timeLayout, "2024-01-15T09:00:00")
+		return time.Time{}, fmt.Errorf("agent: datetime is required: provide a value in format %q (e.g., %q)", timeLayout, "2024-01-15T09:00:00")
 	}
 	parsed, err := time.ParseInLocation(timeLayout, s, loc)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("agent: invalid local_time %q: expected format %q without a timezone suffix (e.g., %q)", s, timeLayout, "2024-01-15T09:00:00")
+		return time.Time{}, fmt.Errorf("agent: invalid datetime %q: expected format %q without a timezone suffix (e.g., %q)", s, timeLayout, "2024-01-15T09:00:00")
 	}
 	return parsed, nil
 }
@@ -358,11 +354,11 @@ func parseLocalTime(s string, loc *time.Location) (time.Time, error) {
 // user's calendar day rather than the server's.
 func parseLocalDate(s string, loc *time.Location) (time.Time, error) {
 	if s == "" {
-		return time.Time{}, fmt.Errorf("agent: local_date is required: provide a date string in format %q (e.g., %q)", dateLayout, "2024-01-15")
+		return time.Time{}, fmt.Errorf("agent: date is required: provide a value in format %q (e.g., %q)", dateLayout, "2024-01-15")
 	}
 	parsed, err := time.ParseInLocation(dateLayout, s, loc)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("agent: invalid local_date %q: expected format %q (e.g., %q)", s, dateLayout, "2024-01-15")
+		return time.Time{}, fmt.Errorf("agent: invalid date %q: expected format %q (e.g., %q)", s, dateLayout, "2024-01-15")
 	}
 	return parsed, nil
 }
@@ -373,7 +369,7 @@ func parseLocalDate(s string, loc *time.Location) (time.Time, error) {
 func normalizeError(err error) error {
 	switch {
 	case errors.Is(err, postera.ErrInvalidInput):
-		return fmt.Errorf("agent: invalid input — verify that local_time is a valid non-zero datetime and all required fields are provided: %w", err)
+		return fmt.Errorf("agent: invalid input — verify that remind_at is a valid non-zero datetime and all required fields are provided: %w", err)
 	case errors.Is(err, postera.ErrNotFound):
 		return fmt.Errorf("agent: posterum not found — the entry does not exist or is inaccessible in the current namespace: %w", err)
 	default:

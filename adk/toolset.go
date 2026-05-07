@@ -32,23 +32,23 @@ type posterumView struct {
 // reuse with time.Parse (which would silently treat it as UTC).
 const naiveTimeLayout = "2006-01-02T15:04:05"
 
-type createInput struct {
-	Message   string `json:"message"`
-	LocalTime string `json:"local_time"`
+type createArgs struct {
+	Message  string `json:"message"`
+	RemindAt string `json:"remind_at"`
 }
 
-type listInput struct {
-	FromLocalTime string `json:"from_local_time"`
-	ToLocalTime   string `json:"to_local_time"`
+type listArgs struct {
+	From string `json:"from"`
+	To   string `json:"to"`
 }
 
-type listByDateInput struct {
-	LocalDate string `json:"local_date"`
+type listByDateArgs struct {
+	Date string `json:"date"`
 }
 
-type listIncomingInput struct{}
+type listIncomingArgs struct{}
 
-type listTodayInput struct{}
+type listTodayArgs struct{}
 
 type listOutput struct {
 	Entries []posterumView `json:"entries"`
@@ -60,16 +60,16 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 	create, err := functiontool.New(
 		functiontool.Config{
 			Name:        "create_posterum",
-			Description: "Schedule a future reminder for yourself at a specific local date and time. Provide the datetime in the user's local time as an ISO 8601 string without a timezone suffix (e.g. 2026-05-07T22:00:00). All times are automatically handled in the user's local timezone.",
+			Description: "Schedule a future reminder for yourself at a specific date and time. Provide the datetime in the user's local time as an ISO 8601 string without a timezone suffix (e.g. 2026-05-07T22:00:00). All times are automatically handled in the user's local timezone.",
 		},
-		func(toolCtx adktool.Context, in createInput) (posterumView, error) {
+		func(toolCtx adktool.Context, in createArgs) (posterumView, error) {
 			ctx, err := contextWithNamespace(toolCtx)
 			if err != nil {
 				return posterumView{}, err
 			}
 			p, err := ts.Create(ctx, agent.CreateArgs{
-				Message:   in.Message,
-				LocalTime: in.LocalTime,
+				Message:  in.Message,
+				RemindAt: in.RemindAt,
 			})
 			if err != nil {
 				return posterumView{}, err
@@ -84,16 +84,16 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 	list, err := functiontool.New(
 		functiontool.Config{
 			Name:        "list_posterum",
-			Description: "List scheduled reminders within an optional time window. Leave from_local_time or to_local_time empty to leave that side unbounded. Provide datetime bounds as ISO 8601 strings without a timezone suffix (e.g. 2024-01-15T09:00:00).",
+			Description: "List scheduled reminders within an optional time window. Leave from or to empty to leave that side unbounded. Provide datetime bounds as ISO 8601 strings without a timezone suffix (e.g. 2024-01-15T09:00:00).",
 		},
-		func(toolCtx adktool.Context, in listInput) (listOutput, error) {
+		func(toolCtx adktool.Context, in listArgs) (listOutput, error) {
 			ctx, err := contextWithNamespace(toolCtx)
 			if err != nil {
 				return listOutput{}, err
 			}
 			entries, err := ts.List(ctx, agent.ListArgs{
-				FromLocalTime: in.FromLocalTime,
-				ToLocalTime:   in.ToLocalTime,
+				From: in.From,
+				To:   in.To,
 			})
 			if err != nil {
 				return listOutput{}, err
@@ -110,13 +110,13 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 			Name:        "list_posterum_by_date",
 			Description: "List all reminders scheduled on a specific calendar day. Day boundaries are computed in the user's local timezone. Provide the date as an ISO 8601 string (e.g. 2024-01-15).",
 		},
-		func(toolCtx adktool.Context, in listByDateInput) (listOutput, error) {
+		func(toolCtx adktool.Context, in listByDateArgs) (listOutput, error) {
 			ctx, err := contextWithNamespace(toolCtx)
 			if err != nil {
 				return listOutput{}, err
 			}
 			entries, err := ts.ListByDate(ctx, agent.ListByDateArgs{
-				LocalDate: in.LocalDate,
+				Date: in.Date,
 			})
 			if err != nil {
 				return listOutput{}, err
@@ -133,7 +133,7 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 			Name:        "list_incoming_posterum",
 			Description: "List all reminders that are scheduled to execute at or after the current instant. Use this to show the user what future reminders are pending.",
 		},
-		func(toolCtx adktool.Context, _ listIncomingInput) (listOutput, error) {
+		func(toolCtx adktool.Context, _ listIncomingArgs) (listOutput, error) {
 			ctx, err := contextWithNamespace(toolCtx)
 			if err != nil {
 				return listOutput{}, err
@@ -154,7 +154,7 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 			Name:        "list_today_posterum",
 			Description: "List all reminders scheduled within the current calendar day in the user's local timezone, both past and future. Use this when the user asks what is on today's schedule.",
 		},
-		func(toolCtx adktool.Context, _ listTodayInput) (listOutput, error) {
+		func(toolCtx adktool.Context, _ listTodayArgs) (listOutput, error) {
 			ctx, err := contextWithNamespace(toolCtx)
 			if err != nil {
 				return listOutput{}, err

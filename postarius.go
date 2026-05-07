@@ -19,9 +19,9 @@ var ErrInvalidInput = errors.New("postera: invalid input")
 // Posterum is a single prospective memory: a scheduled future recall that
 // the agent will receive when RemindAt arrives.
 //
-// ID and CreatedAt are populated by Postarius.Create; values supplied by
-// the caller are overwritten so that the orchestrator can guarantee a
-// single authoritative ID across the Registry and the Enqueuer.
+// ID and CreatedAt are assigned by Postarius.Create and must not be set by
+// the caller; they are the orchestrator's sole authority over identity and
+// ordering across the Registry and the Enqueuer.
 type Posterum struct {
 	ID        string
 	Message   string
@@ -83,24 +83,27 @@ func New(registry Registry, enqueuer Enqueuer) *Postarius {
 	return &Postarius{registry: registry, enqueuer: enqueuer}
 }
 
-// Create assigns a fresh ID and CreatedAt to posterum, enqueues it, and
-// persists it. Any ID or CreatedAt set by the caller is overwritten — the
-// orchestrator is the sole authority for these fields.
+// Create enqueues and persists a new Posterum with the given message and
+// reminder time. The returned Posterum carries the assigned ID and CreatedAt.
 //
-// posterum.RemindAt must be non-zero; Create returns an error wrapping
-// ErrInvalidInput otherwise.
+// remindAt must be non-zero; Create returns an error wrapping ErrInvalidInput
+// otherwise.
 //
 // If persistence fails after a successful enqueue, Create attempts a
 // best-effort rollback by calling Enqueuer.Cancel. The rollback runs with a
 // context detached from the caller's cancellation so it can complete even if
 // the caller has already given up.
-func (p *Postarius) Create(ctx context.Context, posterum Posterum) (Posterum, error) {
-	if posterum.RemindAt.IsZero() {
-		return Posterum{}, fmt.Errorf("postera: create: RemindAt must be non-zero: %w", ErrInvalidInput)
+func (p *Postarius) Create(ctx context.Context, message string, remindAt time.Time) (Posterum, error) {
+	if remindAt.IsZero() {
+		return Posterum{}, fmt.Errorf("postera: create: remindAt must be non-zero: %w", ErrInvalidInput)
 	}
 
-	posterum.ID = uuid.NewString()
-	posterum.CreatedAt = now()
+	posterum := Posterum{
+		ID:        uuid.NewString(),
+		Message:   message,
+		RemindAt:  remindAt,
+		CreatedAt: now(),
+	}
 
 	if err := p.enqueuer.Enqueue(ctx, posterum); err != nil {
 		return Posterum{}, fmt.Errorf("postera: enqueue: %w", err)
@@ -163,7 +166,7 @@ func (p *Postarius) Remove(ctx context.Context, id string) error {
 }
 
 // List returns the entries matching q, in the order produced by the Registry.
-func (p *Postarius) List(ctx context.Context, q Query) ([]Posterum, error) {
+func (p *Postarius) List(ctx context.Context, q TimeRange) ([]Posterum, error) {
 	entries, err := p.registry.List(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("postera: list: %w", err)
@@ -174,7 +177,7 @@ func (p *Postarius) List(ctx context.Context, q Query) ([]Posterum, error) {
 // ListIncoming returns the entries scheduled to execute at or after the
 // present instant.
 func (p *Postarius) ListIncoming(ctx context.Context) ([]Posterum, error) {
-	return p.List(ctx, Query{From: now()})
+	return p.List(ctx, TimeRange{From: now()})
 }
 
 // ListToday returns the entries scheduled within the current UTC calendar
@@ -188,7 +191,7 @@ func (p *Postarius) ListToday(ctx context.Context) ([]Posterum, error) {
 func (p *Postarius) ListIncomingToday(ctx context.Context) ([]Posterum, error) {
 	t := now()
 	_, end := dayBounds(t)
-	return p.List(ctx, Query{From: t, To: end})
+	return p.List(ctx, TimeRange{From: t, To: end})
 }
 
 // ListLastWeek returns the entries from the last seven days, ending at now.
@@ -205,14 +208,14 @@ func (p *Postarius) ListLastNDays(ctx context.Context, n int) ([]Posterum, error
 		return nil, fmt.Errorf("postera: list last n days: n must be non-negative, got %d: %w", n, ErrInvalidInput)
 	}
 	t := now()
-	return p.List(ctx, Query{From: t.AddDate(0, 0, -n), To: t})
+	return p.List(ctx, TimeRange{From: t.AddDate(0, 0, -n), To: t})
 }
 
 // ListByDate returns the entries within the calendar day of date, computed
 // in date's location.
 func (p *Postarius) ListByDate(ctx context.Context, date time.Time) ([]Posterum, error) {
 	from, to := dayBounds(date)
-	return p.List(ctx, Query{From: from, To: to})
+	return p.List(ctx, TimeRange{From: from, To: to})
 }
 
 // dayBounds returns the [start, end) bounds of the calendar day containing

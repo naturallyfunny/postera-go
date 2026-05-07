@@ -194,9 +194,9 @@ func (r *Registry) Remove(ctx context.Context, id string) error {
 }
 
 // List returns Posterum entries for the current namespace within q's
-// half-open time range [q.From, q.To), ordered by RemindAt ascending.
+// half-open interval [q.From, q.To), ordered by RemindAt ascending.
 // A zero q.From omits the lower bound; a zero q.To omits the upper bound.
-func (r *Registry) List(ctx context.Context, q postera.Query) ([]postera.Posterum, error) {
+func (r *Registry) List(ctx context.Context, q postera.TimeRange) ([]postera.Posterum, error) {
 	ns := namespaceFrom(ctx)
 	sql, args := r.listQuery(ns, q)
 
@@ -229,7 +229,7 @@ func (r *Registry) List(ctx context.Context, q postera.Query) ([]postera.Posteru
 // listQuery builds the SQL statement and positional argument slice for List.
 // It is separated from List to allow unit-testing query construction without
 // a live database.
-func (r *Registry) listQuery(namespace string, q postera.Query) (string, []any) {
+func (r *Registry) listQuery(namespace string, q postera.TimeRange) (string, []any) {
 	args := []any{namespace}
 	sql := `SELECT id, message, remind_at, created_at FROM ` + r.tableRef() + ` WHERE namespace = $1`
 	if !q.From.IsZero() {

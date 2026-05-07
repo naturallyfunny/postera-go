@@ -10,7 +10,7 @@ import (
 
 // TestListQuery verifies that listQuery always namespaces the query, that
 // positional parameter numbers are assigned correctly, and that the half-open
-// time bounds are emitted only when the corresponding Query field is non-zero.
+// time bounds are emitted only when the corresponding TimeRange field is non-zero.
 func TestListQuery(t *testing.T) {
 	r := &Registry{tableName: "posterum"}
 
@@ -19,14 +19,14 @@ func TestListQuery(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		q           postera.Query
+		q           postera.TimeRange
 		wantArgs    []any
 		containsSQL []string
 		absentSQL   []string
 	}{
 		{
 			name:     "no bounds",
-			q:        postera.Query{},
+			q:        postera.TimeRange{},
 			wantArgs: []any{"tenant"},
 			containsSQL: []string{
 				"namespace = $1",
@@ -39,7 +39,7 @@ func TestListQuery(t *testing.T) {
 		},
 		{
 			name:     "from only",
-			q:        postera.Query{From: t0},
+			q:        postera.TimeRange{From: t0},
 			wantArgs: []any{"tenant", t0},
 			containsSQL: []string{
 				"namespace = $1",
@@ -50,7 +50,7 @@ func TestListQuery(t *testing.T) {
 		},
 		{
 			name:     "to only",
-			q:        postera.Query{To: t1},
+			q:        postera.TimeRange{To: t1},
 			wantArgs: []any{"tenant", t1},
 			containsSQL: []string{
 				"namespace = $1",
@@ -61,7 +61,7 @@ func TestListQuery(t *testing.T) {
 		},
 		{
 			name:     "both bounds",
-			q:        postera.Query{From: t0, To: t1},
+			q:        postera.TimeRange{From: t0, To: t1},
 			wantArgs: []any{"tenant", t0, t1},
 			containsSQL: []string{
 				"namespace = $1",

@@ -10,11 +10,10 @@ import (
 // no Posterum exists for a given id.
 var ErrNotFound = errors.New("postera: posterum not found")
 
-// Query is a half-open time-range filter used by Registry.List.
-//
-// The lower bound is inclusive; the upper bound is exclusive. A zero From
-// disables the lower bound; a zero To disables the upper bound.
-type Query struct {
+// TimeRange is a half-open interval used to filter Posterum entries by
+// RemindAt. The lower bound is inclusive; the upper bound is exclusive. A
+// zero From disables the lower bound; a zero To disables the upper bound.
+type TimeRange struct {
 	From time.Time
 	To   time.Time
 }
@@ -41,5 +40,5 @@ type Registry interface {
 	Remove(ctx context.Context, id string) error
 
 	// List returns the entries matching q, ordered by RemindAt ascending.
-	List(ctx context.Context, q Query) ([]Posterum, error)
+	List(ctx context.Context, q TimeRange) ([]Posterum, error)
 }
