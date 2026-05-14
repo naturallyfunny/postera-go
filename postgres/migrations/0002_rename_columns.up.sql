@@ -1,11 +1,14 @@
 -- {{table}}     — sanitized, quoted table identifier
--- {{index}}     — sanitized index identifier for (namespace, remind_at ASC)
+-- {{index_v2}}  — sanitized index identifier for (namespace, remind_at ASC)
 -- {{index_old}} — sanitized index identifier for (namespace, execute_at ASC)
 --
 -- This migration is idempotent: column-existence checks via pg_catalog.pg_attribute
 -- prevent re-running ALTER TABLE statements that have already been applied.
--- The DROP INDEX / CREATE INDEX at the end use IF EXISTS / IF NOT EXISTS for
--- the same reason.
+-- The DROP INDEX uses IF EXISTS for the same reason.
+--
+-- The CREATE INDEX is guarded by namespace column existence: after migration
+-- 0003 removes the namespace column, re-running this file must not attempt to
+-- recreate an index that references a dropped column.
 --
 -- pg_catalog.pg_attribute is used instead of information_schema.columns to
 -- avoid constructing an unquoted table name for a string-literal comparison,
@@ -39,11 +42,20 @@ BEGIN
     ) THEN
         ALTER TABLE {{table}} RENAME COLUMN execute_at TO remind_at;
     END IF;
+
+    -- Drop the pre-rename index if it still exists; no-op otherwise.
+    EXECUTE 'DROP INDEX IF EXISTS {{index_old}}';
+
+    -- Create the namespace+remind_at index only when the namespace column
+    -- still exists. After migration 0003 removes namespace this guard
+    -- prevents re-creating an index on a dropped column.
+    IF EXISTS (
+        SELECT 1 FROM pg_catalog.pg_attribute
+        WHERE attrelid = '{{table}}'::regclass
+          AND attname   = 'namespace'
+          AND attnum    > 0
+          AND NOT attisdropped
+    ) THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS {{index_v2}} ON {{table}} (namespace, remind_at ASC)';
+    END IF;
 END $$;
-
--- Drop the pre-rename index if it still exists; no-op otherwise.
-DROP INDEX IF EXISTS {{index_old}};
-
--- Create the current index; no-op if it already exists (e.g. on fresh
--- installs where 0001 left no index, or on re-runs after a prior upgrade).
-CREATE INDEX IF NOT EXISTS {{index}} ON {{table}} (namespace, remind_at ASC);

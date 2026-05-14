@@ -52,9 +52,9 @@ type Option func(*Enqueuer)
 // skipped silently.
 //
 // Multiple WithHeaderMapping options compose: each is evaluated on every
-// Enqueue independently. Reading postera.NamespaceKey to project the
-// orchestrator's namespace into a tenant-aware header (e.g. "x-user-id")
-// is the canonical use case.
+// Enqueue independently. The canonical use case is mapping identity context
+// keys (e.g. from the adk package) onto tenant-aware HTTP headers such as
+// "x-user-id".
 //
 // WithHeaderMapping panics if ctxKey is nil or headerName is empty: a nil
 // ctxKey would crash later inside context.Value, and an empty headerName
@@ -125,7 +125,7 @@ func (e *Enqueuer) Close() error {
 //	projects/{projectID}/locations/{locationID}/queues/{queueID}/tasks/{p.ID}
 //
 // allowing Cancel to address the same task by id alone. The task is
-// created with ScheduleTime set to p.RemindAt and an HttpRequest carrying
+// created with ScheduleTime set to p.TriggerAt and an HttpRequest carrying
 // p.Message as its POST body. When a Service Account email was configured,
 // the request is signed with an OIDC token; any configured header mappings
 // are evaluated against ctx and merged into the task's HTTP headers.
@@ -154,7 +154,7 @@ func (e *Enqueuer) Enqueue(ctx context.Context, p postera.Posterum) error {
 		Parent: e.queuePath,
 		Task: &taskspb.Task{
 			Name:         e.taskName(p.ID),
-			ScheduleTime: timestamppb.New(p.RemindAt),
+			ScheduleTime: timestamppb.New(p.TriggerAt),
 			MessageType: &taskspb.Task_HttpRequest{
 				HttpRequest: httpReq,
 			},

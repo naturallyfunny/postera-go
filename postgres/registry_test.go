@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -8,76 +9,158 @@ import (
 	"go.naturallyfunny.dev/postera"
 )
 
-// TestListQuery verifies that listQuery always namespaces the query, that
-// positional parameter numbers are assigned correctly, and that the half-open
-// time bounds are emitted only when the corresponding TimeRange field is non-zero.
+// TestListQuery verifies that listQuery generates correct SQL for all
+// combinations of: time bounds, column mapping presence, and context values.
+// All assertions run without a live database.
 func TestListQuery(t *testing.T) {
-	r := &Registry{tableName: "posterum"}
-
 	t0 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	t1 := time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)
 
+	type userKey struct{}
+	type tenantKey struct{}
+
 	tests := []struct {
 		name        string
+		registry    *Registry
+		ctx         context.Context
 		q           postera.TimeRange
+		wantArgLen  int
 		wantArgs    []any
 		containsSQL []string
 		absentSQL   []string
 	}{
 		{
-			name:     "no bounds",
-			q:        postera.TimeRange{},
-			wantArgs: []any{"tenant"},
-			containsSQL: []string{
-				"namespace = $1",
-				"ORDER BY remind_at ASC",
+			name:        "no bounds no mappings",
+			registry:    &Registry{tableName: "posterum"},
+			ctx:         context.Background(),
+			q:           postera.TimeRange{},
+			wantArgLen:  0,
+			containsSQL: []string{"ORDER BY p.trigger_at ASC"},
+			absentSQL:   []string{"JOIN", "trigger_at >=", "trigger_at <", "WHERE"},
+		},
+		{
+			name:        "from only no mappings",
+			registry:    &Registry{tableName: "posterum"},
+			ctx:         context.Background(),
+			q:           postera.TimeRange{From: t0},
+			wantArgLen:  1,
+			wantArgs:    []any{t0},
+			containsSQL: []string{"p.trigger_at >= $1", "ORDER BY p.trigger_at ASC"},
+			absentSQL:   []string{"trigger_at <", "JOIN"},
+		},
+		{
+			name:        "to only no mappings",
+			registry:    &Registry{tableName: "posterum"},
+			ctx:         context.Background(),
+			q:           postera.TimeRange{To: t1},
+			wantArgLen:  1,
+			wantArgs:    []any{t1},
+			containsSQL: []string{"p.trigger_at < $1", "ORDER BY p.trigger_at ASC"},
+			absentSQL:   []string{"trigger_at >="},
+		},
+		{
+			name:        "both bounds no mappings",
+			registry:    &Registry{tableName: "posterum"},
+			ctx:         context.Background(),
+			q:           postera.TimeRange{From: t0, To: t1},
+			wantArgLen:  2,
+			wantArgs:    []any{t0, t1},
+			containsSQL: []string{"p.trigger_at >= $1", "p.trigger_at < $2", "ORDER BY p.trigger_at ASC"},
+		},
+		{
+			name: "mapping with context value no bounds",
+			registry: &Registry{
+				tableName:      "posterum",
+				columnMappings: []columnMapping{{ctxKey: userKey{}, colName: "user_id"}},
 			},
-			absentSQL: []string{
-				"remind_at >=",
-				"remind_at <",
+			ctx:        context.WithValue(context.Background(), userKey{}, "alice"),
+			q:          postera.TimeRange{},
+			wantArgLen: 1,
+			wantArgs:   []any{"alice"},
+			containsSQL: []string{
+				"INNER JOIN",
+				`m."user_id" = $1`,
+				"ORDER BY p.trigger_at ASC",
 			},
 		},
 		{
-			name:     "from only",
-			q:        postera.TimeRange{From: t0},
-			wantArgs: []any{"tenant", t0},
-			containsSQL: []string{
-				"namespace = $1",
-				"remind_at >= $2",
-				"ORDER BY remind_at ASC",
+			name: "mapping with no context value — JOIN present but no metadata WHERE",
+			registry: &Registry{
+				tableName:      "posterum",
+				columnMappings: []columnMapping{{ctxKey: userKey{}, colName: "user_id"}},
 			},
-			absentSQL: []string{"remind_at <"},
+			ctx:         context.Background(),
+			q:           postera.TimeRange{},
+			wantArgLen:  0,
+			containsSQL: []string{"INNER JOIN", "ORDER BY p.trigger_at ASC"},
+			absentSQL:   []string{`"user_id" =`},
 		},
 		{
-			name:     "to only",
-			q:        postera.TimeRange{To: t1},
-			wantArgs: []any{"tenant", t1},
-			containsSQL: []string{
-				"namespace = $1",
-				"remind_at < $2",
-				"ORDER BY remind_at ASC",
+			name: "two mappings both present with bounds",
+			registry: &Registry{
+				tableName: "posterum",
+				columnMappings: []columnMapping{
+					{ctxKey: userKey{}, colName: "user_id"},
+					{ctxKey: tenantKey{}, colName: "tenant_id"},
+				},
 			},
-			absentSQL: []string{"remind_at >="},
+			ctx: func() context.Context {
+				ctx := context.WithValue(context.Background(), userKey{}, "alice")
+				return context.WithValue(ctx, tenantKey{}, "org1")
+			}(),
+			q:          postera.TimeRange{From: t0},
+			wantArgLen: 3,
+			wantArgs:   []any{"alice", "org1", t0},
+			containsSQL: []string{
+				"INNER JOIN",
+				`m."user_id" = $1`,
+				`m."tenant_id" = $2`,
+				"p.trigger_at >= $3",
+			},
 		},
 		{
-			name:     "both bounds",
-			q:        postera.TimeRange{From: t0, To: t1},
-			wantArgs: []any{"tenant", t0, t1},
+			name: "two mappings one absent — absent mapping skipped",
+			registry: &Registry{
+				tableName: "posterum",
+				columnMappings: []columnMapping{
+					{ctxKey: userKey{}, colName: "user_id"},
+					{ctxKey: tenantKey{}, colName: "tenant_id"},
+				},
+			},
+			ctx:        context.WithValue(context.Background(), userKey{}, "alice"),
+			q:          postera.TimeRange{},
+			wantArgLen: 1,
+			wantArgs:   []any{"alice"},
 			containsSQL: []string{
-				"namespace = $1",
-				"remind_at >= $2",
-				"remind_at < $3",
-				"ORDER BY remind_at ASC",
+				"INNER JOIN",
+				`m."user_id" = $1`,
+			},
+			absentSQL: []string{`"tenant_id" =`},
+		},
+		{
+			name: "custom table name reflected in query",
+			registry: &Registry{
+				tableName: "my_posterum",
+				columnMappings: []columnMapping{
+					{ctxKey: userKey{}, colName: "user_id"},
+				},
+			},
+			ctx:        context.WithValue(context.Background(), userKey{}, "bob"),
+			q:          postera.TimeRange{},
+			wantArgLen: 1,
+			containsSQL: []string{
+				`"my_posterum" p`,
+				`"my_posterum_metadata" m`,
 			},
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			sql, args := r.listQuery("tenant", tc.q)
+			sql, args := tc.registry.listQuery(tc.ctx, tc.q)
 
-			if len(args) != len(tc.wantArgs) {
-				t.Fatalf("args len: want %d, got %d", len(tc.wantArgs), len(args))
+			if len(args) != tc.wantArgLen {
+				t.Fatalf("args len: want %d, got %d (args=%v)", tc.wantArgLen, len(args), args)
 			}
 			for i, want := range tc.wantArgs {
 				if args[i] != want {

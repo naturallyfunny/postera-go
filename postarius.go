@@ -11,13 +11,13 @@ import (
 
 // ErrInvalidInput is returned by Postarius when a caller-supplied value
 // fails validation at the public API boundary (for example, a zero
-// RemindAt or a negative day count). It lets callers distinguish a
+// TriggerAt or a negative day count). It lets callers distinguish a
 // programming error in their own code from an infrastructure failure
 // surfaced by a Registry or an Enqueuer using errors.Is.
-var ErrInvalidInput = errors.New("postera: invalid input")
+var ErrInvalidInput = errors.New("invalid input")
 
 // Posterum is a single prospective memory: a scheduled future recall that
-// the agent will receive when RemindAt arrives.
+// the agent will receive when TriggerAt arrives.
 //
 // ID and CreatedAt are assigned by Postarius.Create and must not be set by
 // the caller; they are the orchestrator's sole authority over identity and
@@ -25,49 +25,8 @@ var ErrInvalidInput = errors.New("postera: invalid input")
 type Posterum struct {
 	ID        string
 	Message   string
-	RemindAt  time.Time
+	TriggerAt time.Time
 	CreatedAt time.Time
-}
-
-// namespaceKey is the unexported, zero-sized type used as the context key
-// for the namespace value. Type identity alone — not a string field —
-// guarantees that no key in any other package can collide with this one,
-// and the empty struct carries no data and incurs no allocation.
-type namespaceKey struct{}
-
-// NamespaceKey is the context key under which postera stores the agent's
-// namespace. It is exported so that external Registry and Enqueuer
-// implementations can read from the same context — for example, to map the
-// namespace onto a database column or an HTTP header — without depending on
-// the helpers in this package.
-var NamespaceKey = namespaceKey{}
-
-// WithNamespace returns a derived context that carries namespace.
-//
-// An empty namespace is rejected: it is indistinguishable from "no
-// namespace set" at the extraction site, so accepting it would silently
-// defeat the partition guarantee that namespaces exist to provide. The
-// caller passing "" is a programming error and WithNamespace panics so
-// that the bug surfaces at its source rather than corrupting downstream
-// reads.
-func WithNamespace(ctx context.Context, namespace string) context.Context {
-	if namespace == "" {
-		panic("postera: WithNamespace called with empty namespace")
-	}
-	return context.WithValue(ctx, NamespaceKey, namespace)
-}
-
-// NamespaceFromContext returns the namespace stored in ctx and a boolean
-// that reports whether one was present.
-//
-// postera is identity-agnostic and does not itself require a namespace.
-// Registry and Enqueuer implementations that mandate one must enforce that
-// requirement in their own layer; the comma-ok signature here exists so
-// that single-tenant implementations can legitimately observe absence
-// without it being modeled as an error.
-func NamespaceFromContext(ctx context.Context) (string, bool) {
-	namespace, ok := ctx.Value(NamespaceKey).(string)
-	return namespace, ok
 }
 
 // Postarius is the orchestrator that keeps a Registry (persistence) and an
@@ -84,24 +43,24 @@ func New(registry Registry, enqueuer Enqueuer) *Postarius {
 }
 
 // Create enqueues and persists a new Posterum with the given message and
-// reminder time. The returned Posterum carries the assigned ID and CreatedAt.
+// trigger time. The returned Posterum carries the assigned ID and CreatedAt.
 //
-// remindAt must be non-zero; Create returns an error wrapping ErrInvalidInput
+// triggerAt must be non-zero; Create returns an error wrapping ErrInvalidInput
 // otherwise.
 //
 // If persistence fails after a successful enqueue, Create attempts a
 // best-effort rollback by calling Enqueuer.Cancel. The rollback runs with a
 // context detached from the caller's cancellation so it can complete even if
 // the caller has already given up.
-func (p *Postarius) Create(ctx context.Context, message string, remindAt time.Time) (Posterum, error) {
-	if remindAt.IsZero() {
-		return Posterum{}, fmt.Errorf("postera: create: remindAt must be non-zero: %w", ErrInvalidInput)
+func (p *Postarius) Create(ctx context.Context, message string, triggerAt time.Time) (Posterum, error) {
+	if triggerAt.IsZero() {
+		return Posterum{}, fmt.Errorf("postera: create: triggerAt must be non-zero: %w", ErrInvalidInput)
 	}
 
 	posterum := Posterum{
 		ID:        uuid.NewString(),
 		Message:   message,
-		RemindAt:  remindAt,
+		TriggerAt: triggerAt,
 		CreatedAt: now(),
 	}
 

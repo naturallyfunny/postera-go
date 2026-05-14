@@ -11,7 +11,7 @@ import (
 var ErrNotFound = errors.New("postera: posterum not found")
 
 // TimeRange is a half-open interval used to filter Posterum entries by
-// RemindAt. The lower bound is inclusive; the upper bound is exclusive. A
+// TriggerAt. The lower bound is inclusive; the upper bound is exclusive. A
 // zero From disables the lower bound; a zero To disables the upper bound.
 type TimeRange struct {
 	From time.Time
@@ -20,10 +20,10 @@ type TimeRange struct {
 
 // Registry persists Posterum entries.
 //
-// Implementations are responsible for any namespacing logic: a multi-tenant
-// Registry should read the namespace from ctx (see WithNamespace and
-// NamespaceKey) and isolate entries accordingly so that one namespace
-// cannot observe another's entries.
+// Implementations are identity-agnostic: any isolation logic (multi-tenancy,
+// per-user partitioning) is the responsibility of the specific implementation
+// and is expressed through implementation-level configuration rather than
+// through this interface.
 //
 // Implementations must be safe for concurrent use.
 type Registry interface {
@@ -39,6 +39,6 @@ type Registry interface {
 	// Remove returns an error that wraps ErrNotFound.
 	Remove(ctx context.Context, id string) error
 
-	// List returns the entries matching q, ordered by RemindAt ascending.
+	// List returns the entries matching q, ordered by TriggerAt ascending.
 	List(ctx context.Context, q TimeRange) ([]Posterum, error)
 }
