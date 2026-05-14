@@ -20,10 +20,12 @@ type TimeRange struct {
 
 // Registry persists Posterum entries.
 //
-// Implementations are responsible for any namespacing logic: a multi-tenant
-// Registry should read the namespace from ctx (see WithNamespace and
-// NamespaceKey) and isolate entries accordingly so that one namespace
-// cannot observe another's entries.
+// Implementations are responsible for any multi-tenancy or isolation logic.
+// Callers inject identity — namespace, user, session, or any other discriminant
+// — into the context before calling; implementations read those values and scope
+// their queries accordingly. The postera root package provides WithNamespace and
+// NamespaceKey as optional helpers for the common case; implementations are free
+// to define and read their own context keys instead.
 //
 // Implementations must be safe for concurrent use.
 type Registry interface {
