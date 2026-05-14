@@ -9,9 +9,6 @@ import (
 	"go.naturallyfunny.dev/postera"
 )
 
-// TestListQuery verifies that listQuery generates correct SQL for all
-// combinations of: time bounds, column mapping presence, and context values.
-// All assertions run without a live database.
 func TestListQuery(t *testing.T) {
 	t0 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	t1 := time.Date(2025, 12, 31, 23, 59, 59, 0, time.UTC)
@@ -31,7 +28,7 @@ func TestListQuery(t *testing.T) {
 	}{
 		{
 			name:        "no bounds no mappings",
-			registry:    &Registry{tableName: "posterum"},
+			registry:    &Registry{},
 			ctx:         context.Background(),
 			q:           postera.TimeRange{},
 			wantArgLen:  0,
@@ -40,7 +37,7 @@ func TestListQuery(t *testing.T) {
 		},
 		{
 			name:        "from only no mappings",
-			registry:    &Registry{tableName: "posterum"},
+			registry:    &Registry{},
 			ctx:         context.Background(),
 			q:           postera.TimeRange{From: t0},
 			wantArgLen:  1,
@@ -50,7 +47,7 @@ func TestListQuery(t *testing.T) {
 		},
 		{
 			name:        "to only no mappings",
-			registry:    &Registry{tableName: "posterum"},
+			registry:    &Registry{},
 			ctx:         context.Background(),
 			q:           postera.TimeRange{To: t1},
 			wantArgLen:  1,
@@ -60,7 +57,7 @@ func TestListQuery(t *testing.T) {
 		},
 		{
 			name:        "both bounds no mappings",
-			registry:    &Registry{tableName: "posterum"},
+			registry:    &Registry{},
 			ctx:         context.Background(),
 			q:           postera.TimeRange{From: t0, To: t1},
 			wantArgLen:  2,
@@ -70,7 +67,6 @@ func TestListQuery(t *testing.T) {
 		{
 			name: "mapping with context value no bounds",
 			registry: &Registry{
-				tableName:      "posterum",
 				columnMappings: []columnMapping{{ctxKey: userKey{}, colName: "user_id"}},
 			},
 			ctx:        context.WithValue(context.Background(), userKey{}, "alice"),
@@ -86,7 +82,6 @@ func TestListQuery(t *testing.T) {
 		{
 			name: "mapping with no context value — JOIN present but no metadata WHERE",
 			registry: &Registry{
-				tableName:      "posterum",
 				columnMappings: []columnMapping{{ctxKey: userKey{}, colName: "user_id"}},
 			},
 			ctx:         context.Background(),
@@ -98,7 +93,6 @@ func TestListQuery(t *testing.T) {
 		{
 			name: "two mappings both present with bounds",
 			registry: &Registry{
-				tableName: "posterum",
 				columnMappings: []columnMapping{
 					{ctxKey: userKey{}, colName: "user_id"},
 					{ctxKey: tenantKey{}, colName: "tenant_id"},
@@ -121,7 +115,6 @@ func TestListQuery(t *testing.T) {
 		{
 			name: "two mappings one absent — absent mapping skipped",
 			registry: &Registry{
-				tableName: "posterum",
 				columnMappings: []columnMapping{
 					{ctxKey: userKey{}, colName: "user_id"},
 					{ctxKey: tenantKey{}, colName: "tenant_id"},
@@ -138,9 +131,8 @@ func TestListQuery(t *testing.T) {
 			absentSQL: []string{`"tenant_id" =`},
 		},
 		{
-			name: "custom table name reflected in query",
+			name: "canonical posterum table names are fixed",
 			registry: &Registry{
-				tableName: "my_posterum",
 				columnMappings: []columnMapping{
 					{ctxKey: userKey{}, colName: "user_id"},
 				},
@@ -149,8 +141,8 @@ func TestListQuery(t *testing.T) {
 			q:          postera.TimeRange{},
 			wantArgLen: 1,
 			containsSQL: []string{
-				`"my_posterum" p`,
-				`"my_posterum_metadata" m`,
+				`"posterum" p`,
+				`"posterum_metadata" m`,
 			},
 		},
 	}

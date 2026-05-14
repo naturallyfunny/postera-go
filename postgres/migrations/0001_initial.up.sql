@@ -1,4 +1,3 @@
--- {{table}} is replaced at runtime with the sanitized, quoted table identifier.
 -- Every statement in this file must be idempotent (IF NOT EXISTS) because the
 -- migration runner re-executes all files on every startup without state tracking.
 --
@@ -10,7 +9,7 @@
 -- but a CREATE INDEX here would fail on re-run after 0002 has renamed the column
 -- the index references.
 
-CREATE TABLE IF NOT EXISTS {{table}} (
+CREATE TABLE IF NOT EXISTS "posterum" (
     id         TEXT        NOT NULL,
     namespace  TEXT        NOT NULL DEFAULT '',
     message    TEXT        NOT NULL,

@@ -13,7 +13,7 @@ A Go library providing "Prospective Memory" capabilities for AI Agents. It enabl
 
 - **Prospective Memory**: Empowers agents to "remember to act" at specific future times.
 - **Atomic-ish Orchestration**: Synchronizes Registry (Persistence) and Enqueuer (Scheduler) with automatic best-effort rollbacks.
-- **Identity Agnostic**: Secure multi-tenancy via the Namespace via Context pattern.
+- **Identity Agnostic**: Secure multi-tenancy via caller-owned context keys and metadata mappings.
 - **Cloud Ready**: Out-of-the-box implementations for GCP Cloud Tasks and PostgreSQL.
 - **ADK Integrated**: Native support for the Google Agent Development Kit.
 
@@ -35,9 +35,17 @@ go get go.naturallyfunny.dev/postera
 ### 1. Initialize Postarius
 
 ```go
+type userIDKey struct{}
+
 // Setup providers
-reg, _ := postgres.NewRegistry(ctx, dbPool, postgres.WithAutoMigrate())
-enq, _ := cloudtasks.NewEnqueuer(ctx, projectID, locationID, queueID, targetURL, saEmail)
+reg, _ := postgres.NewRegistry(ctx, dbPool,
+    postgres.WithAutoMigrate(),
+    postgres.WithColumnMapping(userIDKey{}, "user_id"),
+    postgres.WithColumnMappingAutoMigrate(),
+)
+enq, _ := cloudtasks.NewEnqueuer(ctx, projectID, locationID, queueID, targetURL, saEmail,
+    cloudtasks.WithHeaderMapping(userIDKey{}, "x-user-id"),
+)
 
 // Create the orchestrator
 postarius := postera.New(reg, enq)
@@ -47,13 +55,10 @@ postarius := postera.New(reg, enq)
 
 ```go
 // Inject identity into context
-ctx = postera.WithNamespace(ctx, "user-id-123")
+ctx = context.WithValue(ctx, userIDKey{}, "user-id-123")
 
 // Create the reminder
-p, err := postarius.Create(ctx, postera.Posterum{
-    Body:      []byte("Follow up with client about the proposal"),
-    ExecuteAt: time.Now().Add(48 * time.Hour),
-})
+p, err := postarius.Create(ctx, "Follow up with client about the proposal", time.Now().Add(48*time.Hour))
 ```
 
 ### 3. ADK Integration (Agent Tools)
@@ -61,16 +66,20 @@ p, err := postarius.Create(ctx, postera.Posterum{
 Expose capabilities directly to LLMs using the adk package:
 
 ```go
-agentTool := agent.New(postarius)
-tools, _ := adk.New(agentTool)
+agentToolSet := postera.NewAgentToolSet(postarius,
+    postera.WithAgentDefaultTimezone(time.UTC),
+)
+tools, _ := adk.Tools(agentToolSet,
+    adk.WithUserIDContextKey(userIDKey{}),
+)
 
-// Register tools.All() with your agent framework
+// Register tools with your ADK agent
 ```
 
 ## Project Structure
 
 - `/` : Core interfaces and the Postarius orchestrator.
-- `/postgres` : PostgreSQL Registry implementation.
+- `/postgres` : PostgreSQL Registry implementation using the fixed `posterum` and `posterum_metadata` tables.
 - `/cloudtasks` : GCP Cloud Tasks Enqueuer implementation.
-- `/agent` : Framework-agnostic adapter for AI agents.
+- `/agent_toolset.go` : Framework-agnostic adapter for AI agents.
 - `/adk` : Specific integration for Google Agent Development Kit.
