@@ -15,17 +15,17 @@ import (
 const naiveTimeLayout = "2006-01-02T15:04:05"
 
 type config struct {
-	userIDContextKey any
+	metadataKey any
 }
 
 type Option func(*config)
 
-func WithUserIDContextKey(key any) Option {
+func WithMetadataKey(key any) Option {
 	if key == nil {
-		panic("adk: WithUserIDContextKey: key must not be nil")
+		panic("adk: WithMetadataKey: key must not be nil")
 	}
 	return func(cfg *config) {
-		cfg.userIDContextKey = key
+		cfg.metadataKey = key
 	}
 }
 
@@ -67,7 +67,7 @@ func Tools(ts *agent.ToolSet, opts ...Option) ([]adktool.Tool, error) {
 			Description: "Schedule a future memory trigger for yourself at a specific date and time. Provide the datetime in the user's local time as an ISO 8601 string without a timezone suffix (e.g. 2026-05-07T22:00:00).",
 		},
 		func(toolCtx adktool.Context, in createArgs) (posterumView, error) {
-			ctx := contextFromTool(toolCtx, cfg.userIDContextKey)
+			ctx := contextFromTool(toolCtx, cfg.metadataKey)
 			p, err := ts.Create(ctx, agent.CreateArgs{
 				Message:   in.Message,
 				TriggerAt: in.TriggerAt,
@@ -88,7 +88,7 @@ func Tools(ts *agent.ToolSet, opts ...Option) ([]adktool.Tool, error) {
 			Description: "List scheduled memory triggers within an optional time window. Leave from or to empty to leave that side unbounded. Provide datetime bounds as ISO 8601 strings without a timezone suffix (e.g. 2024-01-15T09:00:00).",
 		},
 		func(toolCtx adktool.Context, in listArgs) (listOutput, error) {
-			ctx := contextFromTool(toolCtx, cfg.userIDContextKey)
+			ctx := contextFromTool(toolCtx, cfg.metadataKey)
 			entries, err := ts.List(ctx, agent.ListArgs{
 				From: in.From,
 				To:   in.To,
@@ -109,7 +109,7 @@ func Tools(ts *agent.ToolSet, opts ...Option) ([]adktool.Tool, error) {
 			Description: "List all memory triggers that are scheduled to execute at or after the current instant. Use this to show the user what future triggers are pending.",
 		},
 		func(toolCtx adktool.Context, _ listIncomingArgs) (listOutput, error) {
-			ctx := contextFromTool(toolCtx, cfg.userIDContextKey)
+			ctx := contextFromTool(toolCtx, cfg.metadataKey)
 			entries, err := ts.ListIncoming(ctx)
 			if err != nil {
 				return listOutput{}, err
@@ -124,12 +124,12 @@ func Tools(ts *agent.ToolSet, opts ...Option) ([]adktool.Tool, error) {
 	return []adktool.Tool{create, list, listIncoming}, nil
 }
 
-func contextFromTool(toolCtx adktool.Context, userIDContextKey any) context.Context {
-	if userIDContextKey == nil {
+func contextFromTool(toolCtx adktool.Context, metadataKey any) context.Context {
+	if metadataKey == nil {
 		return toolCtx
 	}
-	if userID := toolCtx.UserID(); userID != "" {
-		return context.WithValue(toolCtx, userIDContextKey, userID)
+	if id := toolCtx.UserID(); id != "" {
+		return context.WithValue(toolCtx, metadataKey, id)
 	}
 	return toolCtx
 }
