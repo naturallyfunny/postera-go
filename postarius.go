@@ -2,14 +2,20 @@ package postera
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 var ErrInvalidInput = errors.New("invalid input")
+
+func generateID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return base64.URLEncoding.EncodeToString(b)
+}
 
 type Posterum struct {
 	ID        string
@@ -33,7 +39,7 @@ func (p *Postarius) Create(ctx context.Context, message string, triggerAt time.T
 	}
 
 	posterum := Posterum{
-		ID:        uuid.NewString(),
+		ID:        generateID(),
 		Message:   message,
 		TriggerAt: triggerAt,
 		CreatedAt: now(),

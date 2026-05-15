@@ -9,7 +9,7 @@
 ╚═╝      ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝
 ```
 
-Postera is a Go SDK that provides "Prospective Memory" capabilities for AI Agents. The SDK enables agents to "remember to act" at specific times in the future—whether for self-reminders or user-assigned tasks—with guaranteed consistency between data persistence and execution triggers.
+Postera is a Go SDK that provides "Prospective Memory" capabilities for AI Agents. The SDK enables agents to "remember to act" at specific times in the future, whether for self-reminders or user-assigned tasks, with guaranteed consistency between data persistence and execution triggers.
 
 ## Background & Goals
 
@@ -19,7 +19,7 @@ AI agents are traditionally reactive. To build a truly autonomous agent ecosyste
 
 - **Prospective Memory**: Empowers agents to schedule future actions with complete context.
 - **Atomic-ish Orchestration**: Coordinates Registry (Persistence) and Enqueuer (Scheduler) with automatic rollback mechanisms to maintain data integrity.
-- **Identity Agnostic**: Supports multi-tenancy through metadata mapping and context keys owned by the caller.
+- **Metadata Agnostic**: Supports multi-tenancy through metadata mapping and context keys owned by the caller.
 - **Cloud Native**: Integrations available directly for GCP Cloud Tasks and PostgreSQL.
 - **ADK Integrated**: Native support for Google Agent Development Kit (ADK) to facilitate tool exposure to LLMs.
 
@@ -40,69 +40,115 @@ go get go.naturallyfunny.dev/postera
 
 ## Usage Guide
 
-### 1. Initialize Postarius
+### 1. Setup Postarius
 
-You can configure providers with idiomatic options such as automatic column mapping for user identity:
+Postarius requires two main components: a Registry (for persistence) and an Enqueuer (for scheduling).
+
+#### 1.1 Setup Registry (Using PostgreSQL as example)
 
 ```go
-// Context key definition for identity
-type userIDKey struct{}
+import (
+    "go.naturallyfunny.dev/postera/postgres"
+)
 
-// Registry configuration (PostgreSQL)
+// Context key definitions for your addition metadata if you need any (can be multiple)
+type myMetadataKey1 struct{}
+type myMetadataKey2 struct{}
+
+// Registry configuration (PostgreSQL for example)
 reg, _ := postgres.NewRegistry(ctx, dbPool,
     postgres.WithAutoMigrate(),
-    postgres.WithColumnMapping(userIDKey{}, "user_id"),
+    postgres.WithColumnMapping(myMetadataKey1{}, "my_metadata_1"),
+    postgres.WithColumnMapping(myMetadataKey2{}, "my_metadata_2"),
     postgres.WithColumnMappingAutoMigrate(),
 )
+```
 
-// Enqueuer configuration (GCP Cloud Tasks)
-enq, _ := cloudtasks.NewEnqueuer(ctx, cfg,
-    cloudtasks.WithHeaderMapping(userIDKey{}, "x-user-id"),
+#### 1.2 Setup Enqueuer (Using Cloud Tasks as example)
+
+```go
+import (
+    "go.naturallyfunny.dev/postera/cloudtasks"
 )
 
+// Enqueuer configuration (GCP Cloud Tasks for example)
+enq, _ := cloudtasks.NewEnqueuer(ctx, cfg,
+    cloudtasks.WithHeaderMapping(myMetadataKey1{}, "my-metadata-1"),
+    cloudtasks.WithHeaderMapping(myMetadataKey2{}, "my-metadata-2"),
+)
+```
+
+#### 1.3 Create the Postarius
+
+```go
 // Create Postarius orchestrator
 postarius := postera.New(reg, enq)
 ```
 
-### 2. Scheduling Memory (Posterum)
+### 2. Setup The Agent Toolset
 
-The system ensures identity context is carried throughout the scheduling process:
+For agents serving public users with different timezones, configure the toolset to use timezone from context. This ensures the agent is timezone-agnostic and expects user timezone to be propagated through context.
 
 ```go
-// Insert identity into context
-ctx = context.WithValue(ctx, userIDKey{}, "user-abc-123")
+import (
+    "go.naturallyfunny.dev/postera/agent"
+)
 
-// Schedule reminder for 48 hours from now
-p, err := postarius.Create(ctx, "Review project proposal draft", time.Now().Add(48*time.Hour))
+// Define your own timezone key type
+type timezoneKey struct{}
+
+// Setup agent toolset with timezone from context
+// (expects user timezone to be propagated through context, no need to input zone)
+agentToolSet := agent.NewToolSet(postarius,
+    agent.WithTimezoneFromContext(timezoneKey{}),
+)
+
+// Example: propagating user timezone through context
+ctx = context.WithValue(ctx, timezoneKey{}, "Asia/Jakarta")
 ```
 
-### 3. ADK Integration (Agent Tools)
-
-Postera provides an adapter to expose scheduling functions directly to AI agents through ADK:
+If your agent doesn't need timezone from context (e.g., single timezone use case), you can use `WithDefaultTimezone` instead:
 
 ```go
 agentToolSet := agent.NewToolSet(postarius,
     agent.WithDefaultTimezone(time.UTC),
+)
+```
+
+### 3. Setup ADK Toolset
+
+Convert the agent toolset to ADK-compatible tools:
+
+```go
+import (
+    "go.naturallyfunny.dev/postera/adk"
 )
 
 // Get tools ready for agent use
 tools, _ := adk.Tools(agentToolSet)
 ```
 
+### 4. Assign the Tools to Your Agent (ADK Agent for Example)
+
+Initialize your ADK agent with the toolset:
+
+```go
+import (
+    "github.com/google/adk-go"
+)
+
+// Create ADK agent with the tools
+myAgent := &adk.Agent{
+    Tools: tools,
+}
+```
+
 ## Project Structure
 
-| Directory | Description |
-|-----------|-------------|
-| `/` | Core interfaces and Postarius orchestrator logic. |
-| `/postgres` | Registry implementation using PostgreSQL with automatic schema migration support. |
-| `/cloudtasks` | Enqueuer implementation using GCP Cloud Tasks. |
-| `/agent` | Framework-agnostic toolset adapter. |
-| `/adk` | Integration specific to Google Agent Development Kit. |
-
-## Development Principles
-
-Postera is developed following Go community best practices:
-
-- **Interface Consistency**: Uses `context.Context` for cancellation and value propagation across API boundaries.
-- **Error Management**: Errors are normalized to provide precise information to AI agents regarding input failures or missing data.
-- **Scalability**: Designed for serverless environments like Cloud Run with minimal dependencies and non-blocking processing.
+| Directory     | Description                                                                       |
+| ------------- | --------------------------------------------------------------------------------- |
+| `/`           | Core interfaces and Postarius orchestrator logic.                                 |
+| `/postgres`   | Registry implementation using PostgreSQL with automatic schema migration support. |
+| `/cloudtasks` | Enqueuer implementation using GCP Cloud Tasks.                                    |
+| `/agent`      | Framework-agnostic toolset adapter.                                               |
+| `/adk`        | Integration specific to Google Agent Development Kit.                             |
