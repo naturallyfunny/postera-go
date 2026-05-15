@@ -78,7 +78,7 @@ func TestToolSetCreatePreservesContextAndParsesLocalTime(t *testing.T) {
 		contextCheckingRegistry{t: t, key: key, wantValue: "user-123", wantTime: wantTime},
 		contextCheckingEnqueuer{t: t, key: key, wantValue: "user-123"},
 	)
-	tools := agent.New(postarius, agent.WithDefaultTimezone(loc))
+	tools := agent.NewToolSet(postarius, agent.WithDefaultTimezone(loc))
 
 	ctx := context.WithValue(context.Background(), key, "user-123")
 	got, err := tools.Create(ctx, agent.CreateArgs{

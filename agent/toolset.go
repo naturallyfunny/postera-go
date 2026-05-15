@@ -35,9 +35,9 @@ func WithTimezoneFromContext(key any) ToolSetOption {
 	}
 }
 
-func New(p *postera.Postarius, opts ...ToolSetOption) *ToolSet {
+func NewToolSet(p *postera.Postarius, opts ...ToolSetOption) *ToolSet {
 	if p == nil {
-		panic("agent: New: p must not be nil")
+		panic("agent: NewToolSet: p must not be nil")
 	}
 	ts := &ToolSet{postarius: p}
 	for _, opt := range opts {
