@@ -3,10 +3,11 @@
 ```
 ██████╗  ██████╗ ███████╗████████╗███████╗██████╗  █████╗
 ██╔══██╗██╔═══██╗██╔════╝╚══██╔══╝██╔════╝██╔══██╗██╔══██╗
-█████╔╝██║   ██║███████╗   ██║   █████╗  ██████╔╝███████║
+██████╔╝██║   ██║███████╗   ██║   █████╗  ██████╔╝███████║
 ██╔═══╝ ██║   ██║╚════██║   ██║   ██╔══╝  ██╔══██╗██╔══██║
 ██║     ╚██████╔╝███████║   ██║   ███████╗██║  ██║██║  ██║
 ╚═╝      ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝
+
 ```
 
 Postera is a Go SDK that provides "Prospective Memory" capabilities for AI Agents. The SDK enables agents to "remember to act" at specific times in the future, whether for self-reminders or user-assigned tasks, with guaranteed consistency between data persistence and execution triggers.
