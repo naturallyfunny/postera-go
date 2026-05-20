@@ -43,8 +43,31 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 
 	create, err := functiontool.New(
 		functiontool.Config{
-			Name:        "create_posterum",
-			Description: "Schedule a future memory trigger for yourself at a specific date and time. Provide the datetime in the user's local time as an ISO 8601 string without a timezone suffix (e.g. 2026-05-07T22:00:00).",
+			Name: "schedule_recall",
+			Description: `Schedule a message to your future self that Postera will trigger at a precise date and time.
+
+WHEN TO USE:
+- You need to follow up on something at a specific future time
+- The user asks you to remind them or check in on something later
+- A task or decision needs to be revisited at a defined point in the future
+- You want to ensure continuity of a plan across sessions
+
+HOW TO USE:
+- Write message as a clear, self-contained instruction to your future self.
+  Assume your future self has no memory of the current conversation.
+  Include all the context needed to act: who, what, and why.
+- Provide trigger_at as an ISO 8601 datetime without a timezone suffix
+  (e.g. "2026-05-07T22:00:00"). Use the time exactly as the user stated it.
+
+GOOD message EXAMPLES:
+- "Follow up with the user on whether they submitted the Q3 report they
+   mentioned. They were waiting on approval from their manager."
+- "Check in on the deployment scheduled for this morning. Ask the user
+   if it succeeded and whether any issues came up."
+
+BAD message EXAMPLES:
+- "Follow up" — too vague, no context for future self
+- "Reminder" — not actionable, missing all substance`,
 		},
 		func(toolCtx adktool.Context, in createArgs) (posterumView, error) {
 			p, err := ts.Create(toolCtx, agent.CreateArgs{
@@ -63,8 +86,20 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 
 	list, err := functiontool.New(
 		functiontool.Config{
-			Name:        "list_posterum",
-			Description: "List scheduled memory triggers within an optional time window. Leave from or to empty to leave that side unbounded. Provide datetime bounds as ISO 8601 strings without a timezone suffix (e.g. 2024-01-15T09:00:00).",
+			Name: "list_recalls",
+			Description: `List recalls scheduled within an optional time window.
+
+WHEN TO USE:
+- The user asks what recalls are scheduled in a given period
+- You want to check whether a recall already exists before scheduling
+  a new one to avoid duplicates
+
+HOW TO USE:
+- Provide from and/or to as ISO 8601 datetimes without a timezone suffix
+  (e.g. "2026-05-07T09:00:00"). Use times exactly as the user states them.
+- Leave from empty to retrieve all recalls up to the to bound.
+- Leave to empty to retrieve all recalls from the from bound onward.
+- Leave both empty to retrieve all recalls ever scheduled.`,
 		},
 		func(toolCtx adktool.Context, in listArgs) (listOutput, error) {
 			entries, err := ts.List(toolCtx, agent.ListArgs{
@@ -83,8 +118,16 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 
 	listIncoming, err := functiontool.New(
 		functiontool.Config{
-			Name:        "list_incoming_posterum",
-			Description: "List all memory triggers that are scheduled to execute at or after the current instant. Use this to show the user what future triggers are pending.",
+			Name: "list_upcoming_recalls",
+			Description: `List all recalls scheduled to trigger from this moment onward.
+
+WHEN TO USE:
+- The user asks what is coming up or what future recalls are pending
+- You want to confirm to the user what is still in schedule
+
+WHEN NOT TO USE:
+- When the user wants to see past recalls — use list_recalls with a to
+  bound in the past instead`,
 		},
 		func(toolCtx adktool.Context, _ listIncomingArgs) (listOutput, error) {
 			entries, err := ts.ListIncoming(toolCtx)
