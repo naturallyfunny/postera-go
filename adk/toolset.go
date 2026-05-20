@@ -44,11 +44,11 @@ func Tools(ts *agent.ToolSet) ([]adktool.Tool, error) {
 	create, err := functiontool.New(
 		functiontool.Config{
 			Name: "schedule_recall",
-			Description: `Schedule a message to your future self that Postera will trigger at a precise date and time.
+			Description: `Schedule a message to your future self that Postera (Your Agentic Self Recall System) will trigger at a precise date and time.
 
 WHEN TO USE:
 - You need to follow up on something at a specific future time
-- The user asks you to remind them or check in on something later
+- The human asks you to remind them or check in on something later
 - A task or decision needs to be revisited at a defined point in the future
 - You want to ensure continuity of a plan across sessions
 
@@ -57,12 +57,13 @@ HOW TO USE:
   Assume your future self has no memory of the current conversation.
   Include all the context needed to act: who, what, and why.
 - Provide trigger_at as an ISO 8601 datetime without a timezone suffix
-  (e.g. "2026-05-07T22:00:00"). Use the time exactly as the user stated it.
+  (e.g. "2026-05-07T22:00:00"). Time is always localized consistently
+  across human, you (agent), and Postera — no conversion needed.
 
 GOOD message EXAMPLES:
-- "Follow up with the user on whether they submitted the Q3 report they
+- "Follow up with the human on whether they submitted the Q3 report they
    mentioned. They were waiting on approval from their manager."
-- "Check in on the deployment scheduled for this morning. Ask the user
+- "Check in on the deployment scheduled for this morning. Ask the human
    if it succeeded and whether any issues came up."
 
 BAD message EXAMPLES:
@@ -90,13 +91,14 @@ BAD message EXAMPLES:
 			Description: `List recalls scheduled within an optional time window.
 
 WHEN TO USE:
-- The user asks what recalls are scheduled in a given period
+- The human asks what recalls are scheduled in a given period
 - You want to check whether a recall already exists before scheduling
   a new one to avoid duplicates
 
 HOW TO USE:
 - Provide from and/or to as ISO 8601 datetimes without a timezone suffix
-  (e.g. "2026-05-07T09:00:00"). Use times exactly as the user states them.
+  (e.g. "2026-05-07T09:00:00"). No conversion needed — time is localized
+  consistently across human, you (agent), and Postera.
 - Leave from empty to retrieve all recalls up to the to bound.
 - Leave to empty to retrieve all recalls from the from bound onward.
 - Leave both empty to retrieve all recalls ever scheduled.`,
@@ -122,11 +124,11 @@ HOW TO USE:
 			Description: `List all recalls scheduled to trigger from this moment onward.
 
 WHEN TO USE:
-- The user asks what is coming up or what future recalls are pending
-- You want to confirm to the user what is still in schedule
+- The human asks what is coming up or what future recalls are pending
+- You want to confirm to the human what is still in schedule
 
 WHEN NOT TO USE:
-- When the user wants to see past recalls — use list_recalls with a to
+- When the human wants to see past recalls — use list_recalls with a to
   bound in the past instead`,
 		},
 		func(toolCtx adktool.Context, _ listIncomingArgs) (listOutput, error) {
