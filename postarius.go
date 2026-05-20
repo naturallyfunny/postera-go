@@ -11,10 +11,14 @@ import (
 
 var ErrInvalidInput = errors.New("invalid input")
 
+const idPrefix = "pstr_"
+
 func generateID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return base64.URLEncoding.EncodeToString(b)
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("postera: crypto/rand failed: " + err.Error())
+	}
+	return idPrefix + base64.RawURLEncoding.EncodeToString(b[:])
 }
 
 type Posterum struct {
