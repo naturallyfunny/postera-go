@@ -9,6 +9,32 @@ import (
 	"go.naturallyfunny.dev/postera"
 )
 
+const TimeLayout = "2006-01-02T15:04:05"
+
+type PosterumView struct {
+	ID        string `json:"id"`
+	Message   string `json:"message"`
+	TriggerAt string `json:"trigger_at"`
+	CreatedAt string `json:"created_at"`
+}
+
+func FormatPosterum(p postera.Posterum, loc *time.Location) PosterumView {
+	return PosterumView{
+		ID:        p.ID,
+		Message:   p.Message,
+		TriggerAt: p.TriggerAt.In(loc).Format(TimeLayout),
+		CreatedAt: p.CreatedAt.In(loc).Format(TimeLayout),
+	}
+}
+
+func FormatPosterums(entries []postera.Posterum, loc *time.Location) []PosterumView {
+	views := make([]PosterumView, len(entries))
+	for i, entry := range entries {
+		views[i] = FormatPosterum(entry, loc)
+	}
+	return views
+}
+
 type ToolSet struct {
 	postarius   *postera.Postarius
 	defaultTZ   *time.Location
@@ -147,11 +173,11 @@ func (ts *ToolSet) resolveLocation(ctx context.Context) (*time.Location, error) 
 
 func parseLocalTime(s string, loc *time.Location) (time.Time, error) {
 	if s == "" {
-		return time.Time{}, fmt.Errorf("postera: agent: datetime is required: provide a value in format %q (e.g., %q)", "2006-01-02T15:04:05", "2024-01-15T09:00:00")
+		return time.Time{}, fmt.Errorf("postera: agent: datetime is required: provide a value in format %q (e.g., %q)", TimeLayout, "2024-01-15T09:00:00")
 	}
-	parsed, err := time.ParseInLocation("2006-01-02T15:04:05", s, loc)
+	parsed, err := time.ParseInLocation(TimeLayout, s, loc)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("postera: agent: invalid datetime %q: expected format %q without a timezone suffix (e.g., %q)", s, "2006-01-02T15:04:05", "2024-01-15T09:00:00")
+		return time.Time{}, fmt.Errorf("postera: agent: invalid datetime %q: expected format %q without a timezone suffix (e.g., %q)", s, TimeLayout, "2024-01-15T09:00:00")
 	}
 	return parsed, nil
 }
