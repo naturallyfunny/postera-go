@@ -11,30 +11,6 @@ import (
 
 const TimeLayout = "2006-01-02T15:04:05"
 
-type PosterumView struct {
-	ID        string `json:"id"`
-	Message   string `json:"message"`
-	TriggerAt string `json:"trigger_at"`
-	CreatedAt string `json:"created_at"`
-}
-
-func FormatPosterum(p postera.Posterum, loc *time.Location) PosterumView {
-	return PosterumView{
-		ID:        p.ID,
-		Message:   p.Message,
-		TriggerAt: p.TriggerAt.In(loc).Format(TimeLayout),
-		CreatedAt: p.CreatedAt.In(loc).Format(TimeLayout),
-	}
-}
-
-func FormatPosterums(entries []postera.Posterum, loc *time.Location) []PosterumView {
-	views := make([]PosterumView, len(entries))
-	for i, entry := range entries {
-		views[i] = FormatPosterum(entry, loc)
-	}
-	return views
-}
-
 type ToolSet struct {
 	postarius   *postera.Postarius
 	defaultTZ   *time.Location
