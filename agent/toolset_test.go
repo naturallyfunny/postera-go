@@ -41,7 +41,7 @@ func (r contextCheckingRegistry) Remove(context.Context, string) error {
 	return nil
 }
 
-func (r contextCheckingRegistry) List(context.Context, postera.TimeRange) ([]postera.Posterum, error) {
+func (r contextCheckingRegistry) List(context.Context, postera.Query) ([]postera.Posterum, error) {
 	r.t.Helper()
 	r.t.Fatal("unexpected List")
 	return nil, nil

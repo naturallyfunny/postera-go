@@ -5,9 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	gcptasks "cloud.google.com/go/cloudtasks/apiv2"
 	taskspb "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
-	"google.golang.org/api/option"
+	"github.com/googleapis/gax-go/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -23,52 +22,79 @@ type Config struct {
 	ServiceAccountEmail string
 }
 
+type tasksClient interface {
+	CreateTask(ctx context.Context, req *taskspb.CreateTaskRequest, opts ...gax.CallOption) (*taskspb.Task, error)
+	DeleteTask(ctx context.Context, req *taskspb.DeleteTaskRequest, opts ...gax.CallOption) error
+}
+
 type Enqueuer struct {
-	client              *gcptasks.Client
+	client              tasksClient
 	queuePath           string
 	targetURL           string
 	serviceAccountEmail string
-	headerMappings      []headerMapping
-	gcpClientOpts       []option.ClientOption
+	humanHeader         string
+	agentHeader         string
+	sessionHeader       string
+	metadataHeaders     []metadataHeader
 }
 
-type headerMapping struct {
-	ctxKey     any
+type metadataHeader struct {
+	key        string
 	headerName string
 }
 
 type Option func(*Enqueuer)
 
-func WithHeaderMapping(ctxKey any, headerName string) Option {
-	if ctxKey == nil {
-		panic("cloudtasks: WithHeaderMapping called with nil ctxKey")
-	}
+func WithHumanHeader(headerName string) Option {
 	if headerName == "" {
-		panic("cloudtasks: WithHeaderMapping called with empty headerName")
+		panic("cloudtasks: WithHumanHeader called with empty headerName")
 	}
 	return func(e *Enqueuer) {
-		e.headerMappings = append(e.headerMappings, headerMapping{
-			ctxKey:     ctxKey,
+		e.humanHeader = headerName
+	}
+}
+
+func WithAgentHeader(headerName string) Option {
+	if headerName == "" {
+		panic("cloudtasks: WithAgentHeader called with empty headerName")
+	}
+	return func(e *Enqueuer) {
+		e.agentHeader = headerName
+	}
+}
+
+func WithSessionHeader(headerName string) Option {
+	if headerName == "" {
+		panic("cloudtasks: WithSessionHeader called with empty headerName")
+	}
+	return func(e *Enqueuer) {
+		e.sessionHeader = headerName
+	}
+}
+
+func WithMetadataHeader(key string, headerName string) Option {
+	if key == "" {
+		panic("cloudtasks: WithMetadataHeader called with empty key")
+	}
+	if headerName == "" {
+		panic("cloudtasks: WithMetadataHeader called with empty headerName")
+	}
+	return func(e *Enqueuer) {
+		e.metadataHeaders = append(e.metadataHeaders, metadataHeader{
+			key:        key,
 			headerName: headerName,
 		})
 	}
 }
 
-// WithGCPClientOption passes an option directly to the underlying GCP Cloud Tasks client.
-// Useful for custom credentials, endpoints, or injecting a test connection.
-func WithGCPClientOption(opt option.ClientOption) Option {
-	return func(e *Enqueuer) {
-		e.gcpClientOpts = append(e.gcpClientOpts, opt)
-	}
-}
-
-func NewEnqueuer(ctx context.Context, cfg Config, opts ...Option) (*Enqueuer, error) {
+func NewEnqueuer(client tasksClient, cfg Config, opts ...Option) (*Enqueuer, error) {
 	if cfg.ProjectID == "" || cfg.LocationID == "" || cfg.QueueID == "" {
 		return nil, errors.New("cloudtasks: ProjectID, LocationID, and QueueID must be non-empty")
 	}
 	// TargetURL is validated lazily in Enqueue; cancel-only consumers do not need it.
 
 	e := &Enqueuer{
+		client:              client,
 		queuePath:           fmt.Sprintf("projects/%s/locations/%s/queues/%s", cfg.ProjectID, cfg.LocationID, cfg.QueueID),
 		targetURL:           cfg.TargetURL,
 		serviceAccountEmail: cfg.ServiceAccountEmail,
@@ -76,17 +102,7 @@ func NewEnqueuer(ctx context.Context, cfg Config, opts ...Option) (*Enqueuer, er
 	for _, opt := range opts {
 		opt(e)
 	}
-
-	client, err := gcptasks.NewClient(ctx, e.gcpClientOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("cloudtasks: new client: %w", err)
-	}
-	e.client = client
 	return e, nil
-}
-
-func (e *Enqueuer) Close() error {
-	return e.client.Close()
 }
 
 func (e *Enqueuer) Enqueue(ctx context.Context, p postera.Posterum) error {
@@ -97,7 +113,7 @@ func (e *Enqueuer) Enqueue(ctx context.Context, p postera.Posterum) error {
 		Url:        e.targetURL,
 		HttpMethod: taskspb.HttpMethod_POST,
 		Body:       []byte(p.Message),
-		Headers:    e.headersFromContext(ctx),
+		Headers:    e.headersFromPosterum(p),
 	}
 	if e.serviceAccountEmail != "" {
 		httpReq.AuthorizationHeader = &taskspb.HttpRequest_OidcToken{
@@ -144,15 +160,24 @@ func (e *Enqueuer) taskName(id string) string {
 	return fmt.Sprintf("%s/tasks/%s", e.queuePath, id)
 }
 
-func (e *Enqueuer) headersFromContext(ctx context.Context) map[string]string {
-	if len(e.headerMappings) == 0 {
-		return nil
+func (e *Enqueuer) headersFromPosterum(p postera.Posterum) map[string]string {
+	headers := make(map[string]string)
+	if e.humanHeader != "" && p.Human != "" {
+		headers[e.humanHeader] = p.Human
 	}
-	headers := make(map[string]string, len(e.headerMappings))
-	for _, m := range e.headerMappings {
-		if v, ok := ctx.Value(m.ctxKey).(string); ok {
+	if e.agentHeader != "" && p.Agent != "" {
+		headers[e.agentHeader] = p.Agent
+	}
+	if e.sessionHeader != "" && p.Session != "" {
+		headers[e.sessionHeader] = p.Session
+	}
+	for _, m := range e.metadataHeaders {
+		if v, ok := p.Metadata[m.key]; ok && v != "" {
 			headers[m.headerName] = v
 		}
+	}
+	if len(headers) == 0 {
+		return nil
 	}
 	return headers
 }

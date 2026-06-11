@@ -35,8 +35,8 @@ END $$;
 -- Create the new index on trigger_at only; no-op if already exists.
 CREATE INDEX IF NOT EXISTS "idx_posterum_trigger_at" ON "posterum" (trigger_at ASC);
 
--- Create the detached metadata table. The schema here is minimal: additional
--- identity columns are added on demand via WithColumnMappingAutoMigrate.
+-- Create the legacy detached metadata table. Migration 0004 moves identity and
+-- metadata onto posterum and drops this table.
 CREATE TABLE IF NOT EXISTS "posterum_metadata" (
     posterum_id TEXT NOT NULL,
     PRIMARY KEY (posterum_id),

@@ -69,7 +69,10 @@ func (ts *ToolSet) Create(ctx context.Context, args CreateArgs) (postera.Posteru
 		return postera.Posterum{}, err
 	}
 
-	result, err := ts.postarius.Create(ctx, args.Message, triggerAt)
+	result, err := ts.postarius.Create(ctx, postera.Posterum{
+		Message:   args.Message,
+		TriggerAt: triggerAt,
+	})
 	if err != nil {
 		return postera.Posterum{}, normalizeError(err)
 	}
@@ -77,7 +80,7 @@ func (ts *ToolSet) Create(ctx context.Context, args CreateArgs) (postera.Posteru
 }
 
 func (ts *ToolSet) List(ctx context.Context, args ListArgs) ([]postera.Posterum, error) {
-	var q postera.TimeRange
+	var q postera.Query
 
 	if args.From != "" || args.To != "" {
 		loc, err := ts.resolveLocation(ctx)
@@ -103,14 +106,6 @@ func (ts *ToolSet) List(ctx context.Context, args ListArgs) ([]postera.Posterum,
 	}
 
 	results, err := ts.postarius.List(ctx, q)
-	if err != nil {
-		return nil, normalizeError(err)
-	}
-	return results, nil
-}
-
-func (ts *ToolSet) ListIncoming(ctx context.Context) ([]postera.Posterum, error) {
-	results, err := ts.postarius.ListIncoming(ctx)
 	if err != nil {
 		return nil, normalizeError(err)
 	}

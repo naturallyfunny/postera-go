@@ -10,7 +10,7 @@
 
 ```
 
-Postera is a Go SDK that provides "Prospective Memory" capabilities for AI Agents. The SDK enables agents to "remember to act" at specific times in the future, whether for self-reminders or user-assigned tasks, with guaranteed consistency between data persistence and execution triggers.
+Postera is a Go SDK for scheduled messages in the human x agent layer. A `Posterum` is a message an agent sends to its future self on behalf of, or in relation to, a human.
 
 ## Background & Goals
 
@@ -18,9 +18,9 @@ AI agents are traditionally reactive. To build a truly autonomous agent ecosyste
 
 ## Key Features
 
-- **Prospective Memory**: Empowers agents to schedule future actions with complete context.
+- **Agent-First Scheduled Messaging**: Lets agents schedule future self-addressed messages with human, agent, session, and metadata context.
 - **Atomic-ish Orchestration**: Coordinates Registry (Persistence) and Enqueuer (Scheduler) with automatic rollback mechanisms to maintain data integrity.
-- **Metadata Agnostic**: Supports multi-tenancy through metadata mapping and context keys owned by the caller.
+- **Explicit Query Context**: Supports multi-tenant storage through first-class `Human`, `Agent`, `Session`, and `Metadata` fields owned by the caller.
 - **Cloud Native**: Integrations available directly for GCP Cloud Tasks and PostgreSQL.
 - **ADK Integrated**: Native support for Google Agent Development Kit (ADK) to facilitate tool exposure to LLMs.
 
@@ -52,16 +52,9 @@ import (
     "go.naturallyfunny.dev/postera/postgres"
 )
 
-// Context key definitions for your addition metadata if you need any (can be multiple)
-type myMetadataKey1 struct{}
-type myMetadataKey2 struct{}
-
 // Registry configuration (PostgreSQL for example)
 reg, _ := postgres.NewRegistry(ctx, dbPool,
     postgres.WithAutoMigrate(),
-    postgres.WithColumnMapping(myMetadataKey1{}, "my_metadata_1"),
-    postgres.WithColumnMapping(myMetadataKey2{}, "my_metadata_2"),
-    postgres.WithColumnMappingAutoMigrate(),
 )
 ```
 
@@ -69,13 +62,20 @@ reg, _ := postgres.NewRegistry(ctx, dbPool,
 
 ```go
 import (
+    gcptasks "cloud.google.com/go/cloudtasks/apiv2"
+
     "go.naturallyfunny.dev/postera/cloudtasks"
 )
 
+client, _ := gcptasks.NewClient(ctx)
+defer client.Close()
+
 // Enqueuer configuration (GCP Cloud Tasks for example)
-enq, _ := cloudtasks.NewEnqueuer(ctx, cfg,
-    cloudtasks.WithHeaderMapping(myMetadataKey1{}, "my-metadata-1"),
-    cloudtasks.WithHeaderMapping(myMetadataKey2{}, "my-metadata-2"),
+enq, _ := cloudtasks.NewEnqueuer(client, cfg,
+    cloudtasks.WithHumanHeader("x-postera-human"),
+    cloudtasks.WithAgentHeader("x-postera-agent"),
+    cloudtasks.WithSessionHeader("x-postera-session"),
+    cloudtasks.WithMetadataHeader("timezone", "x-postera-timezone"),
 )
 ```
 
@@ -84,6 +84,24 @@ enq, _ := cloudtasks.NewEnqueuer(ctx, cfg,
 ```go
 // Create Postarius orchestrator
 postarius := postera.New(reg, enq)
+```
+
+### 1.4 Create and List Posterums
+
+```go
+posterum, _ := postarius.Create(ctx, postera.Posterum{
+    Human:     "user-123",
+    Agent:     "support-agent",
+    Session:   "session-456",
+    Metadata:  map[string]string{"timezone": "Asia/Jakarta"},
+    Message:   "Follow up with the user",
+    TriggerAt: time.Now().Add(2 * time.Hour),
+})
+
+entries, _ := postarius.List(ctx, postera.Query{
+    Human: "user-123",
+    From:  time.Now(),
+})
 ```
 
 ### 2. Setup The Agent Toolset

@@ -23,6 +23,10 @@ func generateID() string {
 
 type Posterum struct {
 	ID        string
+	Human     string
+	Agent     string
+	Session   string
+	Metadata  map[string]string
 	Message   string
 	TriggerAt time.Time
 	CreatedAt time.Time
@@ -37,17 +41,13 @@ func New(registry Registry, enqueuer Enqueuer) *Postarius {
 	return &Postarius{registry: registry, enqueuer: enqueuer}
 }
 
-func (p *Postarius) Create(ctx context.Context, message string, triggerAt time.Time) (Posterum, error) {
-	if triggerAt.IsZero() {
+func (p *Postarius) Create(ctx context.Context, posterum Posterum) (Posterum, error) {
+	if posterum.TriggerAt.IsZero() {
 		return Posterum{}, fmt.Errorf("postera: create: triggerAt must be non-zero: %w", ErrInvalidInput)
 	}
 
-	posterum := Posterum{
-		ID:        generateID(),
-		Message:   message,
-		TriggerAt: triggerAt,
-		CreatedAt: now(),
-	}
+	posterum.ID = generateID()
+	posterum.CreatedAt = now()
 
 	if err := p.enqueuer.Enqueue(ctx, posterum); err != nil {
 		return Posterum{}, fmt.Errorf("postera: enqueue: %w", err)
@@ -99,48 +99,12 @@ func (p *Postarius) Remove(ctx context.Context, id string) error {
 	return nil
 }
 
-func (p *Postarius) List(ctx context.Context, q TimeRange) ([]Posterum, error) {
+func (p *Postarius) List(ctx context.Context, q Query) ([]Posterum, error) {
 	entries, err := p.registry.List(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("postera: list: %w", err)
 	}
 	return entries, nil
-}
-
-func (p *Postarius) ListIncoming(ctx context.Context) ([]Posterum, error) {
-	return p.List(ctx, TimeRange{From: now()})
-}
-
-func (p *Postarius) ListToday(ctx context.Context) ([]Posterum, error) {
-	return p.ListByDate(ctx, now())
-}
-
-func (p *Postarius) ListIncomingToday(ctx context.Context) ([]Posterum, error) {
-	t := now()
-	_, end := dayBounds(t)
-	return p.List(ctx, TimeRange{From: t, To: end})
-}
-
-func (p *Postarius) ListLastWeek(ctx context.Context) ([]Posterum, error) {
-	return p.ListLastNDays(ctx, 7)
-}
-
-func (p *Postarius) ListLastNDays(ctx context.Context, n int) ([]Posterum, error) {
-	if n < 0 {
-		return nil, fmt.Errorf("postera: list last n days: n must be non-negative, got %d: %w", n, ErrInvalidInput)
-	}
-	t := now()
-	return p.List(ctx, TimeRange{From: t.AddDate(0, 0, -n), To: t})
-}
-
-func (p *Postarius) ListByDate(ctx context.Context, date time.Time) ([]Posterum, error) {
-	from, to := dayBounds(date)
-	return p.List(ctx, TimeRange{From: from, To: to})
-}
-
-func dayBounds(t time.Time) (time.Time, time.Time) {
-	start := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
-	return start, start.AddDate(0, 0, 1)
 }
 
 func now() time.Time {

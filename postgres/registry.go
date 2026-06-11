@@ -3,14 +3,15 @@ package postgres
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"go.naturallyfunny.dev/postera"
 )
@@ -24,22 +25,9 @@ type Querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-type transactioner interface {
-	Begin(ctx context.Context) (pgx.Tx, error)
-}
-
-type columnMapping struct {
-	ctxKey  any
-	colName string
-}
-
-var validColName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
-
 type Registry struct {
-	db                       Querier
-	autoMigrate              bool
-	columnMappings           []columnMapping
-	columnMappingAutoMigrate bool
+	db          Querier
+	autoMigrate bool
 }
 
 type Option func(*Registry)
@@ -47,24 +35,6 @@ type Option func(*Registry)
 func WithAutoMigrate() Option {
 	return func(r *Registry) {
 		r.autoMigrate = true
-	}
-}
-
-func WithColumnMapping(ctxKey any, colName string) Option {
-	if ctxKey == nil {
-		panic("postgres: WithColumnMapping: ctxKey must not be nil")
-	}
-	if !validColName.MatchString(colName) {
-		panic(fmt.Sprintf("postgres: WithColumnMapping: invalid column name %q: must match ^[a-zA-Z_][a-zA-Z0-9_]*$", colName))
-	}
-	return func(r *Registry) {
-		r.columnMappings = append(r.columnMappings, columnMapping{ctxKey: ctxKey, colName: colName})
-	}
-}
-
-func WithColumnMappingAutoMigrate() Option {
-	return func(r *Registry) {
-		r.columnMappingAutoMigrate = true
 	}
 }
 
@@ -83,12 +53,6 @@ func NewRegistry(ctx context.Context, db Querier, opts ...Option) (*Registry, er
 		}
 	}
 
-	if r.columnMappingAutoMigrate && len(r.columnMappings) > 0 {
-		if err := r.ensureMetadataColumns(ctx); err != nil {
-			return nil, fmt.Errorf("postgres: column mapping auto-migrate: %w", err)
-		}
-	}
-
 	if err := r.validateSchema(ctx); err != nil {
 		return nil, err
 	}
@@ -97,21 +61,26 @@ func NewRegistry(ctx context.Context, db Querier, opts ...Option) (*Registry, er
 }
 
 func (r *Registry) Save(ctx context.Context, p postera.Posterum) error {
-	if len(r.columnMappings) == 0 {
-		return r.execSave(ctx, r.db, p)
+	metadata, err := metadataToJSON(p.Metadata)
+	if err != nil {
+		return fmt.Errorf("postgres: save %s: metadata: %w", p.ID, err)
 	}
-	return r.saveWithMetadata(ctx, p)
-}
-
-func (r *Registry) execSave(ctx context.Context, q Querier, p postera.Posterum) error {
-	_, err := q.Exec(ctx,
-		`INSERT INTO `+r.tableRef()+` (id, message, trigger_at, created_at)
-		VALUES ($1, $2, $3, $4)
+	_, err = r.db.Exec(ctx,
+		`INSERT INTO `+r.tableRef()+` (id, message, human, agent, session, metadata, trigger_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (id) DO UPDATE
 			SET message    = EXCLUDED.message,
+			    human      = EXCLUDED.human,
+			    agent      = EXCLUDED.agent,
+			    session    = EXCLUDED.session,
+			    metadata   = EXCLUDED.metadata,
 			    trigger_at = EXCLUDED.trigger_at`,
 		p.ID,
 		p.Message,
+		p.Human,
+		p.Agent,
+		p.Session,
+		metadata,
 		p.TriggerAt.UTC(),
 		p.CreatedAt.UTC(),
 	)
@@ -121,108 +90,40 @@ func (r *Registry) execSave(ctx context.Context, q Querier, p postera.Posterum) 
 	return nil
 }
 
-func (r *Registry) saveWithMetadata(ctx context.Context, p postera.Posterum) error {
-	if btx, ok := r.db.(transactioner); ok {
-		tx, err := btx.Begin(ctx)
-		if err != nil {
-			return fmt.Errorf("postgres: save %s: begin tx: %w", p.ID, err)
-		}
-		defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a harmless no-op
-		if err := r.execSave(ctx, tx, p); err != nil {
-			return err
-		}
-		if err := r.execSaveMetadata(ctx, tx, p.ID); err != nil {
-			return err
-		}
-		return tx.Commit(ctx)
-	}
-	// db is already a Tx or some other non-transactioner querier; execute sequentially.
-	if err := r.execSave(ctx, r.db, p); err != nil {
-		return err
-	}
-	return r.execSaveMetadata(ctx, r.db, p.ID)
-}
-
-func (r *Registry) execSaveMetadata(ctx context.Context, q Querier, posterumID string) error {
-	pidCol := pgx.Identifier{"posterum_id"}.Sanitize()
-	cols := []string{pidCol}
-	vals := []any{posterumID}
-	updateClauses := []string{}
-
-	for _, m := range r.columnMappings {
-		v, _ := ctx.Value(m.ctxKey).(string)
-		colQ := pgx.Identifier{m.colName}.Sanitize()
-		cols = append(cols, colQ)
-		vals = append(vals, v)
-		updateClauses = append(updateClauses, fmt.Sprintf("%s = EXCLUDED.%s", colQ, colQ))
-	}
-
-	placeholders := make([]string, len(vals))
-	for i := range vals {
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-	}
-
-	conflictAction := "DO NOTHING"
-	if len(updateClauses) > 0 {
-		conflictAction = "DO UPDATE SET " + strings.Join(updateClauses, ", ")
-	}
-
-	sql := fmt.Sprintf(
-		`INSERT INTO %s (%s) VALUES (%s) ON CONFLICT (%s) %s`,
-		r.metadataTableRef(),
-		strings.Join(cols, ", "),
-		strings.Join(placeholders, ", "),
-		pidCol,
-		conflictAction,
-	)
-	if _, err := q.Exec(ctx, sql, vals...); err != nil {
-		return fmt.Errorf("postgres: save metadata %s: %w", posterumID, err)
-	}
-	return nil
-}
-
 func (r *Registry) Get(ctx context.Context, id string) (postera.Posterum, error) {
-	sql, args := r.getQuery(ctx, id)
-	row := r.db.QueryRow(ctx, sql, args...)
+	row := r.db.QueryRow(ctx,
+		`SELECT id, message, human, agent, session, metadata, trigger_at, created_at FROM `+r.tableRef()+` WHERE id = $1`,
+		id,
+	)
 
 	var (
 		p         postera.Posterum
+		human     pgtype.Text
+		agent     pgtype.Text
+		session   pgtype.Text
+		metadata  []byte
 		triggerAt time.Time
 		createdAt time.Time
 	)
-	if err := row.Scan(&p.ID, &p.Message, &triggerAt, &createdAt); err != nil {
+	if err := row.Scan(&p.ID, &p.Message, &human, &agent, &session, &metadata, &triggerAt, &createdAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return postera.Posterum{}, fmt.Errorf("postgres: get %s: %w", id, postera.ErrNotFound)
 		}
 		return postera.Posterum{}, fmt.Errorf("postgres: get %s: %w", id, err)
+	}
+	p.Human = human.String
+	p.Agent = agent.String
+	p.Session = session.String
+	if err := setMetadata(&p, metadata); err != nil {
+		return postera.Posterum{}, fmt.Errorf("postgres: get %s: metadata: %w", id, err)
 	}
 	p.TriggerAt = triggerAt.UTC()
 	p.CreatedAt = createdAt.UTC()
 	return p, nil
 }
 
-func (r *Registry) getQuery(ctx context.Context, id string) (string, []any) {
-	args := []any{id}
-	base := `SELECT p.id, p.message, p.trigger_at, p.created_at FROM ` + r.tableRef() + ` p`
-	conditions := []string{"p.id = $1"}
-
-	if len(r.columnMappings) > 0 {
-		base += ` INNER JOIN ` + r.metadataTableRef() + ` m ON p.id = m.posterum_id`
-		for _, m := range r.columnMappings {
-			if v, ok := ctx.Value(m.ctxKey).(string); ok && v != "" {
-				args = append(args, v)
-				conditions = append(conditions,
-					fmt.Sprintf(`m.%s = $%d`, pgx.Identifier{m.colName}.Sanitize(), len(args)))
-			}
-		}
-	}
-
-	return base + " WHERE " + strings.Join(conditions, " AND "), args
-}
-
 func (r *Registry) Remove(ctx context.Context, id string) error {
-	sql, args := r.removeQuery(ctx, id)
-	tag, err := r.db.Exec(ctx, sql, args...)
+	tag, err := r.db.Exec(ctx, `DELETE FROM `+r.tableRef()+` WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("postgres: remove %s: %w", id, err)
 	}
@@ -232,29 +133,8 @@ func (r *Registry) Remove(ctx context.Context, id string) error {
 	return nil
 }
 
-func (r *Registry) removeQuery(ctx context.Context, id string) (string, []any) {
-	args := []any{id}
-
-	if len(r.columnMappings) == 0 {
-		return `DELETE FROM ` + r.tableRef() + ` WHERE id = $1`, args
-	}
-
-	conditions := []string{"p.id = m.posterum_id", "p.id = $1"}
-	for _, m := range r.columnMappings {
-		if v, ok := ctx.Value(m.ctxKey).(string); ok && v != "" {
-			args = append(args, v)
-			conditions = append(conditions,
-				fmt.Sprintf(`m.%s = $%d`, pgx.Identifier{m.colName}.Sanitize(), len(args)))
-		}
-	}
-
-	sql := `DELETE FROM ` + r.tableRef() + ` p USING ` + r.metadataTableRef() + ` m WHERE ` +
-		strings.Join(conditions, " AND ")
-	return sql, args
-}
-
-func (r *Registry) List(ctx context.Context, q postera.TimeRange) ([]postera.Posterum, error) {
-	sql, args := r.listQuery(ctx, q)
+func (r *Registry) List(ctx context.Context, q postera.Query) ([]postera.Posterum, error) {
+	sql, args := r.listQuery(q)
 
 	rows, err := r.db.Query(ctx, sql, args...)
 	if err != nil {
@@ -266,11 +146,21 @@ func (r *Registry) List(ctx context.Context, q postera.TimeRange) ([]postera.Pos
 	for rows.Next() {
 		var (
 			p         postera.Posterum
+			human     pgtype.Text
+			agent     pgtype.Text
+			session   pgtype.Text
+			metadata  []byte
 			triggerAt time.Time
 			createdAt time.Time
 		)
-		if err := rows.Scan(&p.ID, &p.Message, &triggerAt, &createdAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Message, &human, &agent, &session, &metadata, &triggerAt, &createdAt); err != nil {
 			return nil, fmt.Errorf("postgres: list: %w", err)
+		}
+		p.Human = human.String
+		p.Agent = agent.String
+		p.Session = session.String
+		if err := setMetadata(&p, metadata); err != nil {
+			return nil, fmt.Errorf("postgres: list: metadata: %w", err)
 		}
 		p.TriggerAt = triggerAt.UTC()
 		p.CreatedAt = createdAt.UTC()
@@ -282,51 +172,38 @@ func (r *Registry) List(ctx context.Context, q postera.TimeRange) ([]postera.Pos
 	return result, nil
 }
 
-func (r *Registry) listQuery(ctx context.Context, q postera.TimeRange) (string, []any) {
+func (r *Registry) listQuery(q postera.Query) (string, []any) {
 	var args []any
-	base := `SELECT p.id, p.message, p.trigger_at, p.created_at FROM ` + r.tableRef() + ` p`
+	base := `SELECT id, message, human, agent, session, metadata, trigger_at, created_at FROM ` + r.tableRef()
 	var conditions []string
 
-	if len(r.columnMappings) > 0 {
-		base += ` INNER JOIN ` + r.metadataTableRef() + ` m ON p.id = m.posterum_id`
-		for _, m := range r.columnMappings {
-			if v, ok := ctx.Value(m.ctxKey).(string); ok && v != "" {
-				args = append(args, v)
-				conditions = append(conditions,
-					fmt.Sprintf(`m.%s = $%d`, pgx.Identifier{m.colName}.Sanitize(), len(args)))
-			}
-		}
+	if q.Human != "" {
+		args = append(args, q.Human)
+		conditions = append(conditions, fmt.Sprintf("human = $%d", len(args)))
 	}
-
+	if q.Agent != "" {
+		args = append(args, q.Agent)
+		conditions = append(conditions, fmt.Sprintf("agent = $%d", len(args)))
+	}
+	if q.Session != "" {
+		args = append(args, q.Session)
+		conditions = append(conditions, fmt.Sprintf("session = $%d", len(args)))
+	}
 	if !q.From.IsZero() {
 		args = append(args, q.From.UTC())
-		conditions = append(conditions, fmt.Sprintf("p.trigger_at >= $%d", len(args)))
+		conditions = append(conditions, fmt.Sprintf("trigger_at >= $%d", len(args)))
 	}
 	if !q.To.IsZero() {
 		args = append(args, q.To.UTC())
-		conditions = append(conditions, fmt.Sprintf("p.trigger_at < $%d", len(args)))
+		conditions = append(conditions, fmt.Sprintf("trigger_at < $%d", len(args)))
 	}
 
 	sql := base
 	if len(conditions) > 0 {
 		sql += " WHERE " + strings.Join(conditions, " AND ")
 	}
-	sql += " ORDER BY p.trigger_at ASC"
+	sql += " ORDER BY trigger_at ASC"
 	return sql, args
-}
-
-func (r *Registry) ensureMetadataColumns(ctx context.Context) error {
-	for _, m := range r.columnMappings {
-		sql := fmt.Sprintf(
-			`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s TEXT`,
-			r.metadataTableRef(),
-			pgx.Identifier{m.colName}.Sanitize(),
-		)
-		if _, err := r.db.Exec(ctx, sql); err != nil {
-			return fmt.Errorf("postgres: ensure metadata column %q: %w", m.colName, err)
-		}
-	}
-	return nil
 }
 
 func (r *Registry) migrate(ctx context.Context) error {
@@ -351,7 +228,7 @@ func (r *Registry) migrate(ctx context.Context) error {
 
 func (r *Registry) validateSchema(ctx context.Context) error {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, message, trigger_at, created_at FROM `+r.tableRef()+` LIMIT 0`,
+		`SELECT id, message, human, agent, session, metadata, trigger_at, created_at FROM `+r.tableRef()+` LIMIT 0`,
 	)
 	if err != nil {
 		return fmt.Errorf("postgres: schema validation for table %q: %w", "posterum", err)
@@ -361,29 +238,31 @@ func (r *Registry) validateSchema(ctx context.Context) error {
 		return fmt.Errorf("postgres: schema validation for table %q: %w", "posterum", err)
 	}
 
-	if len(r.columnMappings) == 0 {
-		return nil
-	}
-
-	cols := []string{pgx.Identifier{"posterum_id"}.Sanitize()}
-	for _, m := range r.columnMappings {
-		cols = append(cols, pgx.Identifier{m.colName}.Sanitize())
-	}
-	metaSQL := `SELECT ` + strings.Join(cols, ", ") + ` FROM ` + r.metadataTableRef() + ` LIMIT 0`
-	rows, err = r.db.Query(ctx, metaSQL)
-	if err != nil {
-		return fmt.Errorf("postgres: schema validation for metadata table %q: %w", "posterum_metadata", err)
-	}
-	rows.Close()
-	return rows.Err()
+	return nil
 }
 
 func (r *Registry) tableRef() string {
 	return pgx.Identifier{"posterum"}.Sanitize()
 }
 
-func (r *Registry) metadataTableRef() string {
-	return pgx.Identifier{"posterum_metadata"}.Sanitize()
+func metadataToJSON(metadata map[string]string) (any, error) {
+	if metadata == nil {
+		return nil, nil
+	}
+	return json.Marshal(metadata)
+}
+
+func setMetadata(p *postera.Posterum, raw []byte) error {
+	if raw == nil {
+		p.Metadata = nil
+		return nil
+	}
+	var metadata map[string]string
+	if err := json.Unmarshal(raw, &metadata); err != nil {
+		return err
+	}
+	p.Metadata = metadata
+	return nil
 }
 
 var _ postera.Registry = (*Registry)(nil)

@@ -1,0 +1,7 @@
+ALTER TABLE "posterum"
+    ADD COLUMN IF NOT EXISTS human    TEXT,
+    ADD COLUMN IF NOT EXISTS agent    TEXT,
+    ADD COLUMN IF NOT EXISTS session  TEXT,
+    ADD COLUMN IF NOT EXISTS metadata JSONB;
+
+DROP TABLE IF EXISTS "posterum_metadata";
