@@ -7,6 +7,7 @@ import (
 
 	gcptasks "cloud.google.com/go/cloudtasks/apiv2"
 	taskspb "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
+	"google.golang.org/api/option"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -28,6 +29,7 @@ type Enqueuer struct {
 	targetURL           string
 	serviceAccountEmail string
 	headerMappings      []headerMapping
+	gcpClientOpts       []option.ClientOption
 }
 
 type headerMapping struct {
@@ -52,21 +54,21 @@ func WithHeaderMapping(ctxKey any, headerName string) Option {
 	}
 }
 
+// WithGCPClientOption passes an option directly to the underlying GCP Cloud Tasks client.
+// Useful for custom credentials, endpoints, or injecting a test connection.
+func WithGCPClientOption(opt option.ClientOption) Option {
+	return func(e *Enqueuer) {
+		e.gcpClientOpts = append(e.gcpClientOpts, opt)
+	}
+}
+
 func NewEnqueuer(ctx context.Context, cfg Config, opts ...Option) (*Enqueuer, error) {
 	if cfg.ProjectID == "" || cfg.LocationID == "" || cfg.QueueID == "" {
 		return nil, errors.New("cloudtasks: ProjectID, LocationID, and QueueID must be non-empty")
 	}
-	if cfg.TargetURL == "" {
-		return nil, errors.New("cloudtasks: TargetURL must be non-empty")
-	}
-
-	client, err := gcptasks.NewClient(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("cloudtasks: new client: %w", err)
-	}
+	// TargetURL is validated lazily in Enqueue; cancel-only consumers do not need it.
 
 	e := &Enqueuer{
-		client:              client,
 		queuePath:           fmt.Sprintf("projects/%s/locations/%s/queues/%s", cfg.ProjectID, cfg.LocationID, cfg.QueueID),
 		targetURL:           cfg.TargetURL,
 		serviceAccountEmail: cfg.ServiceAccountEmail,
@@ -74,6 +76,12 @@ func NewEnqueuer(ctx context.Context, cfg Config, opts ...Option) (*Enqueuer, er
 	for _, opt := range opts {
 		opt(e)
 	}
+
+	client, err := gcptasks.NewClient(ctx, e.gcpClientOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("cloudtasks: new client: %w", err)
+	}
+	e.client = client
 	return e, nil
 }
 
@@ -82,6 +90,9 @@ func (e *Enqueuer) Close() error {
 }
 
 func (e *Enqueuer) Enqueue(ctx context.Context, p postera.Posterum) error {
+	if e.targetURL == "" {
+		return errors.New("cloudtasks: enqueue requires a non-empty TargetURL")
+	}
 	httpReq := &taskspb.HttpRequest{
 		Url:        e.targetURL,
 		HttpMethod: taskspb.HttpMethod_POST,
