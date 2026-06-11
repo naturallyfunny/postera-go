@@ -16,7 +16,7 @@ type Query struct {
 	To      time.Time
 }
 
-type Registry interface {
+type Store interface {
 	Save(ctx context.Context, p Posterum) error
 	Get(ctx context.Context, id string) (Posterum, error)
 	Remove(ctx context.Context, id string) error

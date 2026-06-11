@@ -33,12 +33,12 @@ type Posterum struct {
 }
 
 type Postarius struct {
-	registry Registry
+	store    Store
 	enqueuer Enqueuer
 }
 
-func New(registry Registry, enqueuer Enqueuer) *Postarius {
-	return &Postarius{registry: registry, enqueuer: enqueuer}
+func New(store Store, enqueuer Enqueuer) *Postarius {
+	return &Postarius{store: store, enqueuer: enqueuer}
 }
 
 func (p *Postarius) Create(ctx context.Context, posterum Posterum) (Posterum, error) {
@@ -53,7 +53,7 @@ func (p *Postarius) Create(ctx context.Context, posterum Posterum) (Posterum, er
 		return Posterum{}, fmt.Errorf("postera: enqueue: %w", err)
 	}
 
-	if err := p.registry.Save(ctx, posterum); err != nil {
+	if err := p.store.Save(ctx, posterum); err != nil {
 		rollback := p.enqueuer.Cancel(context.WithoutCancel(ctx), posterum.ID)
 		if rollback != nil {
 			return Posterum{}, errors.Join(
@@ -68,7 +68,7 @@ func (p *Postarius) Create(ctx context.Context, posterum Posterum) (Posterum, er
 }
 
 func (p *Postarius) Get(ctx context.Context, id string) (Posterum, error) {
-	posterum, err := p.registry.Get(ctx, id)
+	posterum, err := p.store.Get(ctx, id)
 	if err != nil {
 		return Posterum{}, fmt.Errorf("postera: get: %w", err)
 	}
@@ -76,7 +76,7 @@ func (p *Postarius) Get(ctx context.Context, id string) (Posterum, error) {
 }
 
 func (p *Postarius) Remove(ctx context.Context, id string) error {
-	posterum, err := p.registry.Get(ctx, id)
+	posterum, err := p.store.Get(ctx, id)
 	if err != nil {
 		return fmt.Errorf("postera: remove: %w", err)
 	}
@@ -85,7 +85,7 @@ func (p *Postarius) Remove(ctx context.Context, id string) error {
 		return fmt.Errorf("postera: cancel: %w", err)
 	}
 
-	if err := p.registry.Remove(context.WithoutCancel(ctx), id); err != nil {
+	if err := p.store.Remove(context.WithoutCancel(ctx), id); err != nil {
 		rollback := p.enqueuer.Enqueue(context.WithoutCancel(ctx), posterum)
 		if rollback != nil {
 			return errors.Join(
@@ -100,7 +100,7 @@ func (p *Postarius) Remove(ctx context.Context, id string) error {
 }
 
 func (p *Postarius) List(ctx context.Context, q Query) ([]Posterum, error) {
-	entries, err := p.registry.List(ctx, q)
+	entries, err := p.store.List(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("postera: list: %w", err)
 	}

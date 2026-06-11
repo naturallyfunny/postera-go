@@ -19,7 +19,7 @@ AI agents are traditionally reactive. To build a truly autonomous agent ecosyste
 ## Key Features
 
 - **Agent-First Scheduled Messaging**: Lets agents schedule future self-addressed messages with human, agent, session, and metadata context.
-- **Atomic-ish Orchestration**: Coordinates Registry (Persistence) and Enqueuer (Scheduler) with automatic rollback mechanisms to maintain data integrity.
+- **Atomic-ish Orchestration**: Coordinates Store (Persistence) and Enqueuer (Scheduler) with automatic rollback mechanisms to maintain data integrity.
 - **Explicit Query Context**: Supports multi-tenant storage through first-class `Human`, `Agent`, `Session`, and `Metadata` fields owned by the caller.
 - **Cloud Native**: Integrations available directly for GCP Cloud Tasks and PostgreSQL.
 - **ADK Integrated**: Native support for Google Agent Development Kit (ADK) to facilitate tool exposure to LLMs.
@@ -28,7 +28,7 @@ AI agents are traditionally reactive. To build a truly autonomous agent ecosyste
 
 Postera operates through a central orchestrator called **Postarius**, which manages two primary interfaces:
 
-- **Registry**: Handles persistent storage of memory entries (e.g., using PostgreSQL).
+- **Store**: Handles persistent storage of scheduled messages (e.g., using PostgreSQL).
 - **Enqueuer**: Schedules infrastructure-level triggers (e.g., using GCP Cloud Tasks).
 
 ## Installation
@@ -43,17 +43,17 @@ go get go.naturallyfunny.dev/postera
 
 ### 1. Setup Postarius
 
-Postarius requires two main components: a Registry (for persistence) and an Enqueuer (for scheduling).
+Postarius requires two main components: a Store (for persistence) and an Enqueuer (for scheduling).
 
-#### 1.1 Setup Registry (Using PostgreSQL as example)
+#### 1.1 Setup Store (Using PostgreSQL as example)
 
 ```go
 import (
     "go.naturallyfunny.dev/postera/postgres"
 )
 
-// Registry configuration (PostgreSQL for example)
-reg, _ := postgres.NewRegistry(ctx, dbPool,
+// Store configuration (PostgreSQL for example)
+store, _ := postgres.NewStore(ctx, dbPool,
     postgres.WithAutoMigrate(),
 )
 ```
@@ -83,7 +83,7 @@ enq, _ := cloudtasks.NewEnqueuer(client, cfg,
 
 ```go
 // Create Postarius orchestrator
-postarius := postera.New(reg, enq)
+postarius := postera.New(store, enq)
 ```
 
 ### 1.4 Create and List Posterums
@@ -115,15 +115,27 @@ import (
 
 // Define your own timezone key type
 type timezoneKey struct{}
+type humanKey struct{}
+type agentKey struct{}
+type sessionKey struct{}
+type metadataKey struct{}
 
 // Setup agent toolset with timezone from context
 // (expects user timezone to be propagated through context, no need to input zone)
 agentToolSet := agent.NewToolSet(postarius,
     agent.WithTimezoneFromContext(timezoneKey{}),
+    agent.WithHumanFromContext(humanKey{}),
+    agent.WithAgentFromContext(agentKey{}),
+    agent.WithSessionFromContext(sessionKey{}),
+    agent.WithMetadataFromContext(metadataKey{}),
 )
 
-// Example: propagating user timezone through context
+// Example: propagating caller-owned context outside the agent-controlled schema
 ctx = context.WithValue(ctx, timezoneKey{}, "Asia/Jakarta")
+ctx = context.WithValue(ctx, humanKey{}, "user-123")
+ctx = context.WithValue(ctx, agentKey{}, "support-agent")
+ctx = context.WithValue(ctx, sessionKey{}, "session-456")
+ctx = context.WithValue(ctx, metadataKey{}, map[string]string{"timezone": "Asia/Jakarta"})
 ```
 
 If your agent doesn't need timezone from context (e.g., single timezone use case), you can use `WithDefaultTimezone` instead:
@@ -167,7 +179,7 @@ myAgent := &adk.Agent{
 | Directory     | Description                                                                       |
 | ------------- | --------------------------------------------------------------------------------- |
 | `/`           | Core interfaces and Postarius orchestrator logic.                                 |
-| `/postgres`   | Registry implementation using PostgreSQL with automatic schema migration support. |
+| `/postgres`   | Store implementation using PostgreSQL with automatic schema migration support.    |
 | `/cloudtasks` | Enqueuer implementation using GCP Cloud Tasks.                                    |
 | `/agent`      | Framework-agnostic toolset adapter.                                               |
 | `/adk`        | Integration specific to Google Agent Development Kit.                             |

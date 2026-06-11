@@ -29,8 +29,8 @@ func TestListQuery(t *testing.T) {
 		{
 			name:        "no filter",
 			q:           postera.Query{},
-			containsSQL: []string{"ORDER BY trigger_at ASC"},
-			absentSQL:   []string{"JOIN", "WHERE", "trigger_at >=", "trigger_at <", "human =", "agent =", "session ="},
+			containsSQL: []string{`FROM "postera"`, "ORDER BY trigger_at ASC"},
+			absentSQL:   []string{`"posterum"`, "JOIN", "WHERE", "trigger_at >=", "trigger_at <", "human =", "agent =", "session ="},
 		},
 		{
 			name:        "human",
@@ -91,7 +91,7 @@ func TestListQuery(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			sql, args := (&Registry{}).listQuery(tc.q)
+			sql, args := (&Store{}).listQuery(tc.q)
 
 			if !reflect.DeepEqual(args, tc.wantArgs) {
 				t.Fatalf("args: want %#v, got %#v", tc.wantArgs, args)
@@ -107,6 +107,16 @@ func TestListQuery(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTableRefUsesPostera(t *testing.T) {
+	sql, _ := (&Store{}).listQuery(postera.Query{})
+	if !strings.Contains(sql, `FROM "postera"`) {
+		t.Fatalf("list SQL should use postera table:\n%s", sql)
+	}
+	if strings.Contains(sql, `"posterum"`) {
+		t.Fatalf("list SQL should not use posterum table:\n%s", sql)
 	}
 }
 
@@ -178,11 +188,11 @@ func (db *saveCapturingDB) QueryRow(context.Context, string, ...any) pgx.Row {
 
 func TestSaveIncludesIdentityAndMetadataColumns(t *testing.T) {
 	db := &saveCapturingDB{}
-	r := &Registry{db: db}
+	s := &Store{db: db}
 	triggerAt := time.Date(2026, 6, 11, 9, 0, 0, 0, time.FixedZone("WIB", 7*60*60))
 	createdAt := time.Date(2026, 6, 10, 9, 0, 0, 0, time.FixedZone("WIB", 7*60*60))
 
-	err := r.Save(context.Background(), postera.Posterum{
+	err := s.Save(context.Background(), postera.Posterum{
 		ID:        "pstr_1",
 		Human:     "human-1",
 		Agent:     "agent-1",
@@ -196,10 +206,13 @@ func TestSaveIncludesIdentityAndMetadataColumns(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	for _, fragment := range []string{"human", "agent", "session", "metadata", "trigger_at"} {
+	for _, fragment := range []string{`INSERT INTO "postera"`, "human", "agent", "session", "metadata", "trigger_at"} {
 		if !strings.Contains(db.sql, fragment) {
 			t.Fatalf("Save SQL missing %q:\n%s", fragment, db.sql)
 		}
+	}
+	if strings.Contains(db.sql, `"posterum"`) {
+		t.Fatalf("Save SQL should not use posterum table:\n%s", db.sql)
 	}
 	wantArgs := []any{"pstr_1", "hello", "human-1", "agent-1", "session-1"}
 	if !reflect.DeepEqual(db.args[:5], wantArgs) {
@@ -252,7 +265,7 @@ func (r posterumRow) Scan(dest ...any) error {
 func TestGetRoundTripsIdentityAndMetadata(t *testing.T) {
 	triggerAt := time.Date(2026, 6, 11, 9, 0, 0, 0, time.UTC)
 	createdAt := time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC)
-	r := &Registry{db: getDB{row: posterumRow{
+	s := &Store{db: getDB{row: posterumRow{
 		p: postera.Posterum{
 			ID:        "pstr_1",
 			Human:     "human-1",
@@ -265,7 +278,7 @@ func TestGetRoundTripsIdentityAndMetadata(t *testing.T) {
 		metadata: []byte(`{"timezone":"Asia/Jakarta"}`),
 	}}}
 
-	got, err := r.Get(context.Background(), "pstr_1")
+	got, err := s.Get(context.Background(), "pstr_1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -288,7 +301,7 @@ func TestGetMetadataNilAndEmptyMap(t *testing.T) {
 		{name: "empty", raw: []byte(`{}`), wantEmpty: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &Registry{db: getDB{row: posterumRow{
+			s := &Store{db: getDB{row: posterumRow{
 				p: postera.Posterum{
 					ID:        "pstr_1",
 					Message:   "hello",
@@ -298,7 +311,7 @@ func TestGetMetadataNilAndEmptyMap(t *testing.T) {
 				metadata: tc.raw,
 			}}}
 
-			got, err := r.Get(context.Background(), "pstr_1")
+			got, err := s.Get(context.Background(), "pstr_1")
 			if err != nil {
 				t.Fatalf("Get: %v", err)
 			}

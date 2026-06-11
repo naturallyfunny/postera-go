@@ -25,48 +25,48 @@ type Querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-type Registry struct {
+type Store struct {
 	db          Querier
 	autoMigrate bool
 }
 
-type Option func(*Registry)
+type Option func(*Store)
 
 func WithAutoMigrate() Option {
-	return func(r *Registry) {
-		r.autoMigrate = true
+	return func(s *Store) {
+		s.autoMigrate = true
 	}
 }
 
-func NewRegistry(ctx context.Context, db Querier, opts ...Option) (*Registry, error) {
+func NewStore(ctx context.Context, db Querier, opts ...Option) (*Store, error) {
 	if db == nil {
-		panic("postgres: NewRegistry called with nil Querier")
+		panic("postgres: NewStore called with nil Querier")
 	}
-	r := &Registry{db: db}
+	s := &Store{db: db}
 	for _, opt := range opts {
-		opt(r)
+		opt(s)
 	}
 
-	if r.autoMigrate {
-		if err := r.migrate(ctx); err != nil {
+	if s.autoMigrate {
+		if err := s.migrate(ctx); err != nil {
 			return nil, fmt.Errorf("postgres: auto-migrate: %w", err)
 		}
 	}
 
-	if err := r.validateSchema(ctx); err != nil {
+	if err := s.validateSchema(ctx); err != nil {
 		return nil, err
 	}
 
-	return r, nil
+	return s, nil
 }
 
-func (r *Registry) Save(ctx context.Context, p postera.Posterum) error {
+func (s *Store) Save(ctx context.Context, p postera.Posterum) error {
 	metadata, err := metadataToJSON(p.Metadata)
 	if err != nil {
 		return fmt.Errorf("postgres: save %s: metadata: %w", p.ID, err)
 	}
-	_, err = r.db.Exec(ctx,
-		`INSERT INTO `+r.tableRef()+` (id, message, human, agent, session, metadata, trigger_at, created_at)
+	_, err = s.db.Exec(ctx,
+		`INSERT INTO `+s.tableRef()+` (id, message, human, agent, session, metadata, trigger_at, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (id) DO UPDATE
 			SET message    = EXCLUDED.message,
@@ -90,9 +90,9 @@ func (r *Registry) Save(ctx context.Context, p postera.Posterum) error {
 	return nil
 }
 
-func (r *Registry) Get(ctx context.Context, id string) (postera.Posterum, error) {
-	row := r.db.QueryRow(ctx,
-		`SELECT id, message, human, agent, session, metadata, trigger_at, created_at FROM `+r.tableRef()+` WHERE id = $1`,
+func (s *Store) Get(ctx context.Context, id string) (postera.Posterum, error) {
+	row := s.db.QueryRow(ctx,
+		`SELECT id, message, human, agent, session, metadata, trigger_at, created_at FROM `+s.tableRef()+` WHERE id = $1`,
 		id,
 	)
 
@@ -122,8 +122,8 @@ func (r *Registry) Get(ctx context.Context, id string) (postera.Posterum, error)
 	return p, nil
 }
 
-func (r *Registry) Remove(ctx context.Context, id string) error {
-	tag, err := r.db.Exec(ctx, `DELETE FROM `+r.tableRef()+` WHERE id = $1`, id)
+func (s *Store) Remove(ctx context.Context, id string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM `+s.tableRef()+` WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("postgres: remove %s: %w", id, err)
 	}
@@ -133,10 +133,10 @@ func (r *Registry) Remove(ctx context.Context, id string) error {
 	return nil
 }
 
-func (r *Registry) List(ctx context.Context, q postera.Query) ([]postera.Posterum, error) {
-	sql, args := r.listQuery(q)
+func (s *Store) List(ctx context.Context, q postera.Query) ([]postera.Posterum, error) {
+	sql, args := s.listQuery(q)
 
-	rows, err := r.db.Query(ctx, sql, args...)
+	rows, err := s.db.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: list: %w", err)
 	}
@@ -172,9 +172,9 @@ func (r *Registry) List(ctx context.Context, q postera.Query) ([]postera.Posteru
 	return result, nil
 }
 
-func (r *Registry) listQuery(q postera.Query) (string, []any) {
+func (s *Store) listQuery(q postera.Query) (string, []any) {
 	var args []any
-	base := `SELECT id, message, human, agent, session, metadata, trigger_at, created_at FROM ` + r.tableRef()
+	base := `SELECT id, message, human, agent, session, metadata, trigger_at, created_at FROM ` + s.tableRef()
 	var conditions []string
 
 	if q.Human != "" {
@@ -206,7 +206,7 @@ func (r *Registry) listQuery(q postera.Query) (string, []any) {
 	return sql, args
 }
 
-func (r *Registry) migrate(ctx context.Context) error {
+func (s *Store) migrate(ctx context.Context) error {
 	entries, err := migrationFiles.ReadDir("migrations")
 	if err != nil {
 		return fmt.Errorf("postgres: read migrations: %w", err)
@@ -219,30 +219,30 @@ func (r *Registry) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("postgres: read %s: %w", entry.Name(), err)
 		}
-		if _, err := r.db.Exec(ctx, string(content)); err != nil {
+		if _, err := s.db.Exec(ctx, string(content)); err != nil {
 			return fmt.Errorf("postgres: execute %s: %w", entry.Name(), err)
 		}
 	}
 	return nil
 }
 
-func (r *Registry) validateSchema(ctx context.Context) error {
-	rows, err := r.db.Query(ctx,
-		`SELECT id, message, human, agent, session, metadata, trigger_at, created_at FROM `+r.tableRef()+` LIMIT 0`,
+func (s *Store) validateSchema(ctx context.Context) error {
+	rows, err := s.db.Query(ctx,
+		`SELECT id, message, human, agent, session, metadata, trigger_at, created_at FROM `+s.tableRef()+` LIMIT 0`,
 	)
 	if err != nil {
-		return fmt.Errorf("postgres: schema validation for table %q: %w", "posterum", err)
+		return fmt.Errorf("postgres: schema validation for table %q: %w", "postera", err)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("postgres: schema validation for table %q: %w", "posterum", err)
+		return fmt.Errorf("postgres: schema validation for table %q: %w", "postera", err)
 	}
 
 	return nil
 }
 
-func (r *Registry) tableRef() string {
-	return pgx.Identifier{"posterum"}.Sanitize()
+func (s *Store) tableRef() string {
+	return pgx.Identifier{"postera"}.Sanitize()
 }
 
 func metadataToJSON(metadata map[string]string) (any, error) {
@@ -265,4 +265,4 @@ func setMetadata(p *postera.Posterum, raw []byte) error {
 	return nil
 }
 
-var _ postera.Registry = (*Registry)(nil)
+var _ postera.Store = (*Store)(nil)

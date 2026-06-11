@@ -15,6 +15,10 @@ type ToolSet struct {
 	postarius   *postera.Postarius
 	defaultTZ   *time.Location
 	timezoneKey any
+	humanKey    any
+	agentKey    any
+	sessionKey  any
+	metadataKey any
 }
 
 type ToolSetOption func(*ToolSet)
@@ -34,6 +38,42 @@ func WithTimezoneFromContext(key any) ToolSetOption {
 	}
 	return func(ts *ToolSet) {
 		ts.timezoneKey = key
+	}
+}
+
+func WithHumanFromContext(key any) ToolSetOption {
+	if key == nil {
+		panic("agent: WithHumanFromContext: key must not be nil")
+	}
+	return func(ts *ToolSet) {
+		ts.humanKey = key
+	}
+}
+
+func WithAgentFromContext(key any) ToolSetOption {
+	if key == nil {
+		panic("agent: WithAgentFromContext: key must not be nil")
+	}
+	return func(ts *ToolSet) {
+		ts.agentKey = key
+	}
+}
+
+func WithSessionFromContext(key any) ToolSetOption {
+	if key == nil {
+		panic("agent: WithSessionFromContext: key must not be nil")
+	}
+	return func(ts *ToolSet) {
+		ts.sessionKey = key
+	}
+}
+
+func WithMetadataFromContext(key any) ToolSetOption {
+	if key == nil {
+		panic("agent: WithMetadataFromContext: key must not be nil")
+	}
+	return func(ts *ToolSet) {
+		ts.metadataKey = key
 	}
 }
 
@@ -69,10 +109,15 @@ func (ts *ToolSet) Create(ctx context.Context, args CreateArgs) (postera.Posteru
 		return postera.Posterum{}, err
 	}
 
-	result, err := ts.postarius.Create(ctx, postera.Posterum{
+	posterum := postera.Posterum{
 		Message:   args.Message,
 		TriggerAt: triggerAt,
-	})
+	}
+	if err := ts.applyPosterumContext(ctx, &posterum); err != nil {
+		return postera.Posterum{}, err
+	}
+
+	result, err := ts.postarius.Create(ctx, posterum)
 	if err != nil {
 		return postera.Posterum{}, normalizeError(err)
 	}
@@ -103,6 +148,9 @@ func (ts *ToolSet) List(ctx context.Context, args ListArgs) ([]postera.Posterum,
 			}
 			q.To = to
 		}
+	}
+	if err := ts.applyQueryContext(ctx, &q); err != nil {
+		return nil, err
 	}
 
 	results, err := ts.postarius.List(ctx, q)
@@ -140,6 +188,71 @@ func (ts *ToolSet) resolveLocation(ctx context.Context) (*time.Location, error) 
 		return ts.defaultTZ, nil
 	}
 	return nil, fmt.Errorf("postera: agent: timezone is required: provide a valid IANA timezone name (e.g., %q)", "Asia/Jakarta")
+}
+
+func (ts *ToolSet) applyPosterumContext(ctx context.Context, p *postera.Posterum) error {
+	var err error
+	if p.Human, err = stringFromContext(ctx, ts.humanKey, "human"); err != nil {
+		return err
+	}
+	if p.Agent, err = stringFromContext(ctx, ts.agentKey, "agent"); err != nil {
+		return err
+	}
+	if p.Session, err = stringFromContext(ctx, ts.sessionKey, "session"); err != nil {
+		return err
+	}
+	if p.Metadata, err = metadataFromContext(ctx, ts.metadataKey); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (ts *ToolSet) applyQueryContext(ctx context.Context, q *postera.Query) error {
+	var err error
+	if q.Human, err = stringFromContext(ctx, ts.humanKey, "human"); err != nil {
+		return err
+	}
+	if q.Agent, err = stringFromContext(ctx, ts.agentKey, "agent"); err != nil {
+		return err
+	}
+	if q.Session, err = stringFromContext(ctx, ts.sessionKey, "session"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func stringFromContext(ctx context.Context, key any, field string) (string, error) {
+	if key == nil {
+		return "", nil
+	}
+	v := ctx.Value(key)
+	if v == nil {
+		return "", nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("postera: agent: %s context value must be a string, got %T", field, v)
+	}
+	return s, nil
+}
+
+func metadataFromContext(ctx context.Context, key any) (map[string]string, error) {
+	if key == nil {
+		return nil, nil
+	}
+	v := ctx.Value(key)
+	if v == nil {
+		return nil, nil
+	}
+	metadata, ok := v.(map[string]string)
+	if !ok {
+		return nil, fmt.Errorf("postera: agent: metadata context value must be map[string]string, got %T", v)
+	}
+	copied := make(map[string]string, len(metadata))
+	for k, v := range metadata {
+		copied[k] = v
+	}
+	return copied, nil
 }
 
 func parseLocalTime(s string, loc *time.Location) (time.Time, error) {

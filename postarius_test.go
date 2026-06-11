@@ -8,24 +8,24 @@ import (
 	"time"
 )
 
-type captureRegistry struct {
+type captureStore struct {
 	saved Posterum
 }
 
-func (r *captureRegistry) Save(_ context.Context, p Posterum) error {
-	r.saved = p
+func (s *captureStore) Save(_ context.Context, p Posterum) error {
+	s.saved = p
 	return nil
 }
 
-func (r *captureRegistry) Get(context.Context, string) (Posterum, error) {
+func (s *captureStore) Get(context.Context, string) (Posterum, error) {
 	panic("unexpected Get")
 }
 
-func (r *captureRegistry) Remove(context.Context, string) error {
+func (s *captureStore) Remove(context.Context, string) error {
 	panic("unexpected Remove")
 }
 
-func (r *captureRegistry) List(context.Context, Query) ([]Posterum, error) {
+func (s *captureStore) List(context.Context, Query) ([]Posterum, error) {
 	panic("unexpected List")
 }
 
@@ -43,9 +43,9 @@ func (e *captureEnqueuer) Cancel(context.Context, string) error {
 }
 
 func TestPostariusCreateAcceptsPosterumAndOverwritesManagedFields(t *testing.T) {
-	registry := &captureRegistry{}
+	store := &captureStore{}
 	enqueuer := &captureEnqueuer{}
-	postarius := New(registry, enqueuer)
+	postarius := New(store, enqueuer)
 	triggerAt := time.Date(2026, 6, 11, 9, 0, 0, 0, time.UTC)
 	callerCreatedAt := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	before := time.Now().UTC()
@@ -77,8 +77,8 @@ func TestPostariusCreateAcceptsPosterumAndOverwritesManagedFields(t *testing.T) 
 	if got.Metadata["timezone"] != "Asia/Jakarta" {
 		t.Fatalf("metadata not preserved: %#v", got.Metadata)
 	}
-	if !reflect.DeepEqual(registry.saved, got) {
-		t.Fatalf("saved posterum: want %#v, got %#v", got, registry.saved)
+	if !reflect.DeepEqual(store.saved, got) {
+		t.Fatalf("saved posterum: want %#v, got %#v", got, store.saved)
 	}
 	if !reflect.DeepEqual(enqueuer.enqueued, got) {
 		t.Fatalf("enqueued posterum: want %#v, got %#v", got, enqueuer.enqueued)
@@ -86,7 +86,7 @@ func TestPostariusCreateAcceptsPosterumAndOverwritesManagedFields(t *testing.T) 
 }
 
 func TestPostariusCreateRejectsZeroTriggerAt(t *testing.T) {
-	postarius := New(&captureRegistry{}, &captureEnqueuer{})
+	postarius := New(&captureStore{}, &captureEnqueuer{})
 
 	_, err := postarius.Create(context.Background(), Posterum{Message: "hello"})
 	if !errors.Is(err, ErrInvalidInput) {
