@@ -41,16 +41,13 @@ go get go.naturallyfunny.dev/postera
 
 ### 1. Setup Postarius
 
-Postarius requires two main components: a Store (for persistence) and an Enqueuer (for scheduling).
+Postarius requires a Store (for persistence) and an Enqueuer (for scheduling), plus options to declare how identity and timezone are propagated through context.
 
 #### 1.1 Setup Store (Using PostgreSQL as example)
 
 ```go
-import (
-    "go.naturallyfunny.dev/postera/postgres"
-)
+import "go.naturallyfunny.dev/postera/postgres"
 
-// Store configuration (PostgreSQL for example)
 store, _ := postgres.NewStore(ctx, dbPool,
     postgres.WithAutoMigrate(),
 )
@@ -61,14 +58,12 @@ store, _ := postgres.NewStore(ctx, dbPool,
 ```go
 import (
     gcptasks "cloud.google.com/go/cloudtasks/apiv2"
-
     "go.naturallyfunny.dev/postera/cloudtasks"
 )
 
 client, _ := gcptasks.NewClient(ctx)
 defer client.Close()
 
-// Enqueuer configuration (GCP Cloud Tasks for example)
 enq, _ := cloudtasks.NewEnqueuer(client, "my-project", "us-central1", "my-queue",
     cloudtasks.WithTargetURL("https://my-service.example.com/webhook"),
     cloudtasks.WithHumanHeader("x-postera-human"),
@@ -78,74 +73,62 @@ enq, _ := cloudtasks.NewEnqueuer(client, "my-project", "us-central1", "my-queue"
 )
 ```
 
-#### 1.3 Create the Postarius
+#### 1.3 Create Postarius
+
+Define your own context key types, then pass them as options so Postarius knows where to read identity and timezone from context:
 
 ```go
-// Create Postarius orchestrator
-postarius := postera.New(store, enq)
-```
-
-### 1.4 Create and List Posterums
-
-```go
-posterum, _ := postarius.Create(ctx, postera.Posterum{
-    Human:     "user-123",
-    Agent:     "support-agent",
-    Session:   "session-456",
-    Metadata:  map[string]string{"timezone": "Asia/Jakarta"},
-    Message:   "Follow up with the user",
-    TriggerAt: time.Now().Add(2 * time.Hour),
-})
-
-entries, _ := postarius.List(ctx, postera.Query{
-    Human: "user-123",
-    From:  time.Now(),
-})
-```
-
-### 2. Setup The Agent Toolset
-
-For agents serving public users with different timezones, configure the toolset to use timezone from context. This ensures the agent is timezone-agnostic and expects user timezone to be propagated through context.
-
-```go
-import (
-    "go.naturallyfunny.dev/postera/agent"
-)
-
-// Define your own timezone key type
 type timezoneKey struct{}
 type humanKey struct{}
 type agentKey struct{}
 type sessionKey struct{}
 type metadataKey struct{}
 
-// Setup agent toolset with timezone from context
-// (expects user timezone to be propagated through context, no need to input zone)
-agentToolSet := agent.NewToolSet(postarius,
-    agent.WithTimezoneFromContext(timezoneKey{}),
-    agent.WithHumanFromContext(humanKey{}),
-    agent.WithAgentFromContext(agentKey{}),
-    agent.WithSessionFromContext(sessionKey{}),
-    agent.WithMetadataFromContext(metadataKey{}),
+postarius := postera.New(store, enq,
+    postera.WithTimezoneFromContext(timezoneKey{}),
+    postera.WithHumanFromContext(humanKey{}),
+    postera.WithAgentFromContext(agentKey{}),
+    postera.WithSessionFromContext(sessionKey{}),
+    postera.WithMetadataFromContext(metadataKey{}),
 )
+```
 
-// Example: propagating caller-owned context outside the agent-controlled schema
+For single-timezone deployments, use `WithDefaultTimezone` instead of `WithTimezoneFromContext`:
+
+```go
+postarius := postera.New(store, enq,
+    postera.WithDefaultTimezone(time.UTC),
+    postera.WithHumanFromContext(humanKey{}),
+    // ...
+)
+```
+
+#### 1.4 Use Postarius
+
+Populate context from your middleware (HTTP, agent harness, etc.) and call Postarius directly:
+
+```go
 ctx = context.WithValue(ctx, timezoneKey{}, "Asia/Jakarta")
 ctx = context.WithValue(ctx, humanKey{}, "user-123")
 ctx = context.WithValue(ctx, agentKey{}, "support-agent")
 ctx = context.WithValue(ctx, sessionKey{}, "session-456")
-ctx = context.WithValue(ctx, metadataKey{}, map[string]string{"timezone": "Asia/Jakarta"})
+
+// Schedule a future self-message
+posterum, _ := postarius.Create(ctx, postera.CreateArgs{
+    Message:   "Follow up with the user on the Q3 report",
+    TriggerAt: "2026-06-15T09:00:00",
+})
+
+// List all upcoming scheduled messages for the current session
+upcoming, _ := postarius.ListUpcoming(ctx)
+
+// Cancel a scheduled message
+postarius.Cancel(ctx, posterum.ID)
 ```
 
-If your agent doesn't need timezone from context (e.g., single timezone use case), you can use `WithDefaultTimezone` instead:
+`TriggerAt` is always provided as a local datetime string (`"2006-01-02T15:04:05"`) — no timezone suffix needed. Postera resolves the timezone from context, so the agent and the human always operate in the same local time without any conversion.
 
-```go
-agentToolSet := agent.NewToolSet(postarius,
-    agent.WithDefaultTimezone(time.UTC),
-)
-```
-
-### 3. Setup ADK Toolset
+### 2. Setup ADK Toolset
 
 ADK integration is provided by a separate module. Install it first:
 
@@ -153,27 +136,19 @@ ADK integration is provided by a separate module. Install it first:
 go get go.naturallyfunny.dev/adk
 ```
 
-Then convert the agent toolset to ADK-compatible tools:
+Then pass Postarius directly to get ADK-compatible tools:
 
 ```go
-import (
-    posteraadk "go.naturallyfunny.dev/adk"
-)
+import posteraadk "go.naturallyfunny.dev/adk"
 
-// Get tools ready for agent use
-tools, _ := posteraadk.Tools(agentToolSet)
+tools, _ := posteraadk.Tools(postarius)
 ```
 
-### 4. Assign the Tools to Your Agent (ADK Agent for Example)
-
-Initialize your ADK agent with the toolset:
+### 3. Assign the Tools to Your Agent (ADK Agent for Example)
 
 ```go
-import (
-    "github.com/google/adk-go"
-)
+import "github.com/google/adk-go"
 
-// Create ADK agent with the tools
 myAgent := &adk.Agent{
     Tools: tools,
 }
@@ -199,4 +174,3 @@ These are known gaps to be aware of before using Postera in a production environ
 | `/`           | Core interfaces and Postarius orchestrator logic.                                 |
 | `/postgres`   | Store implementation using PostgreSQL with automatic schema migration support.    |
 | `/cloudtasks` | Enqueuer implementation using GCP Cloud Tasks.                                    |
-| `/agent`      | Framework-agnostic toolset adapter.                                               |
