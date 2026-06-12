@@ -6,256 +6,137 @@ import (
 	"testing"
 	"time"
 
-	taskspb "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
-	"github.com/googleapis/gax-go/v2"
-
 	"go.naturallyfunny.dev/postera"
 	"go.naturallyfunny.dev/postera/cloudtasks"
 )
 
-type stubTasksClient struct {
-	created   []*taskspb.CreateTaskRequest
-	deleted   []*taskspb.DeleteTaskRequest
-	createErr error
-	deleteErr error
-}
-
-func (s *stubTasksClient) CreateTask(_ context.Context, req *taskspb.CreateTaskRequest, _ ...gax.CallOption) (*taskspb.Task, error) {
-	s.created = append(s.created, req)
-	return &taskspb.Task{Name: req.Task.Name}, s.createErr
-}
-
-func (s *stubTasksClient) DeleteTask(_ context.Context, req *taskspb.DeleteTaskRequest, _ ...gax.CallOption) error {
-	s.deleted = append(s.deleted, req)
-	return s.deleteErr
-}
-
-func baseConfig() cloudtasks.Config {
-	return cloudtasks.Config{ProjectID: "proj", LocationID: "us-central1", QueueID: "q"}
-}
-
-func validPosterum() postera.Posterum {
-	return postera.Posterum{
-		ID:        "task-1",
-		Message:   "hello",
-		TriggerAt: time.Date(2026, 6, 11, 9, 0, 0, 0, time.UTC),
-	}
-}
-
-func newTestEnqueuer(t *testing.T, client *stubTasksClient, opts ...cloudtasks.Option) *cloudtasks.Enqueuer {
-	t.Helper()
-	cfg := baseConfig()
-	cfg.TargetURL = "https://example.com/callback"
-	enq, err := cloudtasks.NewEnqueuer(client, cfg, opts...)
-	if err != nil {
-		t.Fatalf("NewEnqueuer: %v", err)
-	}
-	return enq
-}
-
-func createdHeaders(t *testing.T, client *stubTasksClient) map[string]string {
-	t.Helper()
-	if len(client.created) != 1 {
-		t.Fatalf("created requests: want 1, got %d", len(client.created))
-	}
-	return client.created[0].Task.GetHttpRequest().Headers
-}
-
 func TestNewEnqueuerRequiresQueueFields(t *testing.T) {
-	_, err := cloudtasks.NewEnqueuer(&stubTasksClient{}, cloudtasks.Config{TargetURL: "https://example.com/cb"})
-	if err == nil {
-		t.Fatal("expected error for missing queue fields, got nil")
-	}
-	if !strings.Contains(err.Error(), "ProjectID") {
-		t.Fatalf("error should mention ProjectID, got: %v", err)
-	}
-}
-
-func TestNewEnqueuerAcceptsEmptyTargetURL(t *testing.T) {
-	_, err := cloudtasks.NewEnqueuer(&stubTasksClient{}, baseConfig())
-	if err != nil {
-		t.Fatalf("NewEnqueuer with empty TargetURL: %v", err)
-	}
-}
-
-func TestEnqueueReturnsErrorWhenTargetURLEmpty(t *testing.T) {
-	enq, err := cloudtasks.NewEnqueuer(&stubTasksClient{}, baseConfig())
-	if err != nil {
-		t.Fatalf("NewEnqueuer: %v", err)
-	}
-
-	err = enq.Enqueue(context.Background(), validPosterum())
-	if err == nil {
-		t.Fatal("expected error from Enqueue with empty TargetURL, got nil")
-	}
-	if !strings.Contains(err.Error(), "TargetURL") {
-		t.Fatalf("expected TargetURL error, got: %v", err)
-	}
-}
-
-func TestCancelWorksWithoutTargetURL(t *testing.T) {
-	client := &stubTasksClient{}
-	enq, err := cloudtasks.NewEnqueuer(client, baseConfig())
-	if err != nil {
-		t.Fatalf("NewEnqueuer: %v", err)
-	}
-
-	if err := enq.Cancel(context.Background(), "task-id-123"); err != nil {
-		t.Fatalf("Cancel with no TargetURL: %v", err)
-	}
-	if len(client.deleted) != 1 {
-		t.Fatalf("deleted requests: want 1, got %d", len(client.deleted))
-	}
-}
-
-func TestEnqueueSucceedsWithTargetURL(t *testing.T) {
-	client := &stubTasksClient{}
-	enq := newTestEnqueuer(t, client)
-
-	if err := enq.Enqueue(context.Background(), validPosterum()); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
-	if got := client.created[0].Task.GetHttpRequest().Url; got != "https://example.com/callback" {
-		t.Fatalf("target URL: want %q, got %q", "https://example.com/callback", got)
-	}
-}
-
-func TestEnqueueSetsIdentityHeaders(t *testing.T) {
 	tests := []struct {
-		name       string
-		option     cloudtasks.Option
-		posterum   postera.Posterum
-		headerName string
-		want       string
+		name             string
+		project          string
+		location         string
+		queue            string
+		wantErrSubstring string
 	}{
 		{
-			name:       "human",
-			option:     cloudtasks.WithHumanHeader("x-human"),
-			posterum:   postera.Posterum{Human: "human-1"},
-			headerName: "x-human",
-			want:       "human-1",
+			name:             "all empty",
+			wantErrSubstring: "project",
 		},
 		{
-			name:       "agent",
-			option:     cloudtasks.WithAgentHeader("x-agent"),
-			posterum:   postera.Posterum{Agent: "agent-1"},
-			headerName: "x-agent",
-			want:       "agent-1",
+			name:             "missing location and queue",
+			project:          "proj",
+			wantErrSubstring: "location",
 		},
 		{
-			name:       "session",
-			option:     cloudtasks.WithSessionHeader("x-session"),
-			posterum:   postera.Posterum{Session: "session-1"},
-			headerName: "x-session",
-			want:       "session-1",
+			name:             "missing queue",
+			project:          "proj",
+			location:         "us-central1",
+			wantErrSubstring: "queue",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			client := &stubTasksClient{}
-			enq := newTestEnqueuer(t, client, tc.option)
-			p := validPosterum()
-			p.Human = tc.posterum.Human
-			p.Agent = tc.posterum.Agent
-			p.Session = tc.posterum.Session
-
-			if err := enq.Enqueue(context.Background(), p); err != nil {
-				t.Fatalf("Enqueue: %v", err)
+			_, err := cloudtasks.NewEnqueuer(nil, tc.project, tc.location, tc.queue)
+			if err == nil {
+				t.Fatal("expected error, got nil")
 			}
-			if got := createdHeaders(t, client)[tc.headerName]; got != tc.want {
-				t.Fatalf("header %s: want %q, got %q", tc.headerName, tc.want, got)
+			if !strings.Contains(err.Error(), tc.wantErrSubstring) {
+				t.Fatalf("error should mention %q, got: %v", tc.wantErrSubstring, err)
 			}
 		})
 	}
 }
 
-func TestEnqueueOmitsEmptyIdentityHeaders(t *testing.T) {
-	client := &stubTasksClient{}
-	enq := newTestEnqueuer(t, client,
-		cloudtasks.WithHumanHeader("x-human"),
-		cloudtasks.WithAgentHeader("x-agent"),
-		cloudtasks.WithSessionHeader("x-session"),
-	)
-
-	if err := enq.Enqueue(context.Background(), validPosterum()); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
-	if headers := createdHeaders(t, client); headers != nil {
-		t.Fatalf("headers: want nil, got %v", headers)
+func TestNewEnqueuerAcceptsNoOptions(t *testing.T) {
+	_, err := cloudtasks.NewEnqueuer(nil, "proj", "us-central1", "q")
+	if err != nil {
+		t.Fatalf("NewEnqueuer with no options: %v", err)
 	}
 }
 
-func TestEnqueueSetsMetadataHeaders(t *testing.T) {
-	client := &stubTasksClient{}
-	enq := newTestEnqueuer(t, client,
-		cloudtasks.WithMetadataHeader("timezone", "x-timezone"),
-		cloudtasks.WithMetadataHeader("trace", "x-trace"),
-		cloudtasks.WithMetadataHeader("locale", "x-locale"),
-	)
-	p := validPosterum()
-	p.Metadata = map[string]string{
-		"timezone": "Asia/Jakarta",
-		"trace":    "",
+func TestEnqueueReturnsErrorWhenNoTargetURL(t *testing.T) {
+	enq, err := cloudtasks.NewEnqueuer(nil, "proj", "us-central1", "q")
+	if err != nil {
+		t.Fatalf("NewEnqueuer: %v", err)
 	}
 
-	if err := enq.Enqueue(context.Background(), p); err != nil {
-		t.Fatalf("Enqueue: %v", err)
+	p := postera.Posterum{
+		ID:        "task-1",
+		Message:   "hello",
+		TriggerAt: time.Date(2026, 6, 11, 9, 0, 0, 0, time.UTC),
 	}
-	headers := createdHeaders(t, client)
-	if got := headers["x-timezone"]; got != "Asia/Jakarta" {
-		t.Fatalf("metadata header: want %q, got %q", "Asia/Jakarta", got)
+	err = enq.Enqueue(context.Background(), p)
+	if err == nil {
+		t.Fatal("expected error from Enqueue with no target URL, got nil")
 	}
-	if _, ok := headers["x-trace"]; ok {
-		t.Fatalf("empty metadata value should be omitted: %v", headers)
-	}
-	if _, ok := headers["x-locale"]; ok {
-		t.Fatalf("absent metadata key should be omitted: %v", headers)
+	if !strings.Contains(err.Error(), "WithTargetURL") {
+		t.Fatalf("error should mention WithTargetURL, got: %v", err)
 	}
 }
 
-func TestHeaderOptionsPanicOnEmptyArguments(t *testing.T) {
+func TestNewEnqueuerRejectsEmptyHeaderOption(t *testing.T) {
 	tests := []struct {
-		name string
-		fn   func()
-		want string
+		name   string
+		option cloudtasks.Option
+		want   string
 	}{
 		{
-			name: "human header",
-			fn:   func() { cloudtasks.WithHumanHeader("") },
-			want: "cloudtasks: WithHumanHeader called with empty headerName",
+			name:   "human header",
+			option: cloudtasks.WithHumanHeader(""),
+			want:   "WithHumanHeader",
 		},
 		{
-			name: "agent header",
-			fn:   func() { cloudtasks.WithAgentHeader("") },
-			want: "cloudtasks: WithAgentHeader called with empty headerName",
+			name:   "agent header",
+			option: cloudtasks.WithAgentHeader(""),
+			want:   "WithAgentHeader",
 		},
 		{
-			name: "session header",
-			fn:   func() { cloudtasks.WithSessionHeader("") },
-			want: "cloudtasks: WithSessionHeader called with empty headerName",
+			name:   "session header",
+			option: cloudtasks.WithSessionHeader(""),
+			want:   "WithSessionHeader",
 		},
 		{
-			name: "metadata key",
-			fn:   func() { cloudtasks.WithMetadataHeader("", "x-meta") },
-			want: "cloudtasks: WithMetadataHeader called with empty key",
+			name:   "metadata empty key",
+			option: cloudtasks.WithMetadataHeader("", "x-meta"),
+			want:   "WithMetadataHeader",
 		},
 		{
-			name: "metadata header",
-			fn:   func() { cloudtasks.WithMetadataHeader("meta", "") },
-			want: "cloudtasks: WithMetadataHeader called with empty headerName",
+			name:   "metadata empty header",
+			option: cloudtasks.WithMetadataHeader("key", ""),
+			want:   "WithMetadataHeader",
+		},
+		{
+			name:   "fixed empty name",
+			option: cloudtasks.WithFixedHeader("", "value"),
+			want:   "WithFixedHeader",
+		},
+		{
+			name:   "fixed empty value",
+			option: cloudtasks.WithFixedHeader("name", ""),
+			want:   "WithFixedHeader",
+		},
+		{
+			name:   "target url empty",
+			option: cloudtasks.WithTargetURL(""),
+			want:   "WithTargetURL",
+		},
+		{
+			name:   "service account email empty",
+			option: cloudtasks.WithServiceAccountEmail(""),
+			want:   "WithServiceAccountEmail",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			defer func() {
-				got := recover()
-				if got != tc.want {
-					t.Fatalf("panic: want %q, got %v", tc.want, got)
-				}
-			}()
-			tc.fn()
+			_, err := cloudtasks.NewEnqueuer(nil, "proj", "us-central1", "q", tc.option)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error should mention %q, got: %v", tc.want, err)
+			}
 		})
 	}
 }

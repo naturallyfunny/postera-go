@@ -54,6 +54,7 @@ func (p *Postarius) Create(ctx context.Context, posterum Posterum) (Posterum, er
 	}
 
 	if err := p.store.Save(ctx, posterum); err != nil {
+		// rollback: best-effort cancel; if the cancel also fails, both errors are surfaced to the caller
 		rollback := p.enqueuer.Cancel(context.WithoutCancel(ctx), posterum.ID)
 		if rollback != nil {
 			return Posterum{}, errors.Join(
@@ -86,6 +87,8 @@ func (p *Postarius) Remove(ctx context.Context, id string) error {
 	}
 
 	if err := p.store.Remove(context.WithoutCancel(ctx), id); err != nil {
+		// rollback: best-effort re-enqueue; if posterum.TriggerAt is in the past,
+		// Cloud Tasks will dispatch the task immediately rather than restoring the original schedule.
 		rollback := p.enqueuer.Enqueue(context.WithoutCancel(ctx), posterum)
 		if rollback != nil {
 			return errors.Join(

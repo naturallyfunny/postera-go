@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
+	cloudtaskspkg "cloud.google.com/go/cloudtasks/apiv2"
 	taskspb "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
-	"github.com/googleapis/gax-go/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -14,100 +14,132 @@ import (
 	"go.naturallyfunny.dev/postera"
 )
 
-type Config struct {
-	ProjectID           string
-	LocationID          string
-	QueueID             string
-	TargetURL           string
-	ServiceAccountEmail string
-}
-
-type tasksClient interface {
-	CreateTask(ctx context.Context, req *taskspb.CreateTaskRequest, opts ...gax.CallOption) (*taskspb.Task, error)
-	DeleteTask(ctx context.Context, req *taskspb.DeleteTaskRequest, opts ...gax.CallOption) error
+type headerMapping struct {
+	headerName string
+	get        func(postera.Posterum) string
 }
 
 type Enqueuer struct {
-	client              tasksClient
+	client              *cloudtaskspkg.Client
 	queuePath           string
 	targetURL           string
 	serviceAccountEmail string
-	humanHeader         string
-	agentHeader         string
-	sessionHeader       string
-	metadataHeaders     []metadataHeader
+	headers             []headerMapping
 }
 
-type metadataHeader struct {
-	key        string
-	headerName string
+type Option func(*Enqueuer) error
+
+func WithTargetURL(url string) Option {
+	return func(e *Enqueuer) error {
+		if url == "" {
+			return errors.New("cloudtasks: WithTargetURL: empty url")
+		}
+		e.targetURL = url
+		return nil
+	}
 }
 
-type Option func(*Enqueuer)
+func WithServiceAccountEmail(email string) Option {
+	return func(e *Enqueuer) error {
+		if email == "" {
+			return errors.New("cloudtasks: WithServiceAccountEmail: empty email")
+		}
+		e.serviceAccountEmail = email
+		return nil
+	}
+}
 
 func WithHumanHeader(headerName string) Option {
-	if headerName == "" {
-		panic("cloudtasks: WithHumanHeader called with empty headerName")
-	}
-	return func(e *Enqueuer) {
-		e.humanHeader = headerName
+	return func(e *Enqueuer) error {
+		if headerName == "" {
+			return errors.New("cloudtasks: WithHumanHeader: empty headerName")
+		}
+		e.headers = append(e.headers, headerMapping{
+			headerName: headerName,
+			get:        func(p postera.Posterum) string { return p.Human },
+		})
+		return nil
 	}
 }
 
 func WithAgentHeader(headerName string) Option {
-	if headerName == "" {
-		panic("cloudtasks: WithAgentHeader called with empty headerName")
-	}
-	return func(e *Enqueuer) {
-		e.agentHeader = headerName
+	return func(e *Enqueuer) error {
+		if headerName == "" {
+			return errors.New("cloudtasks: WithAgentHeader: empty headerName")
+		}
+		e.headers = append(e.headers, headerMapping{
+			headerName: headerName,
+			get:        func(p postera.Posterum) string { return p.Agent },
+		})
+		return nil
 	}
 }
 
 func WithSessionHeader(headerName string) Option {
-	if headerName == "" {
-		panic("cloudtasks: WithSessionHeader called with empty headerName")
-	}
-	return func(e *Enqueuer) {
-		e.sessionHeader = headerName
-	}
-}
-
-func WithMetadataHeader(key string, headerName string) Option {
-	if key == "" {
-		panic("cloudtasks: WithMetadataHeader called with empty key")
-	}
-	if headerName == "" {
-		panic("cloudtasks: WithMetadataHeader called with empty headerName")
-	}
-	return func(e *Enqueuer) {
-		e.metadataHeaders = append(e.metadataHeaders, metadataHeader{
-			key:        key,
+	return func(e *Enqueuer) error {
+		if headerName == "" {
+			return errors.New("cloudtasks: WithSessionHeader: empty headerName")
+		}
+		e.headers = append(e.headers, headerMapping{
 			headerName: headerName,
+			get:        func(p postera.Posterum) string { return p.Session },
 		})
+		return nil
 	}
 }
 
-func NewEnqueuer(client tasksClient, cfg Config, opts ...Option) (*Enqueuer, error) {
-	if cfg.ProjectID == "" || cfg.LocationID == "" || cfg.QueueID == "" {
-		return nil, errors.New("cloudtasks: ProjectID, LocationID, and QueueID must be non-empty")
+func WithMetadataHeader(key, headerName string) Option {
+	return func(e *Enqueuer) error {
+		if key == "" {
+			return errors.New("cloudtasks: WithMetadataHeader: empty key")
+		}
+		if headerName == "" {
+			return errors.New("cloudtasks: WithMetadataHeader: empty headerName")
+		}
+		e.headers = append(e.headers, headerMapping{
+			headerName: headerName,
+			get:        func(p postera.Posterum) string { return p.Metadata[key] },
+		})
+		return nil
 	}
-	// TargetURL is validated lazily in Enqueue; cancel-only consumers do not need it.
+}
+
+func WithFixedHeader(name, value string) Option {
+	return func(e *Enqueuer) error {
+		if name == "" {
+			return errors.New("cloudtasks: WithFixedHeader: empty name")
+		}
+		if value == "" {
+			return errors.New("cloudtasks: WithFixedHeader: empty value")
+		}
+		e.headers = append(e.headers, headerMapping{
+			headerName: name,
+			get:        func(_ postera.Posterum) string { return value },
+		})
+		return nil
+	}
+}
+
+func NewEnqueuer(client *cloudtaskspkg.Client, project, location, queue string, opts ...Option) (*Enqueuer, error) {
+	if project == "" || location == "" || queue == "" {
+		return nil, errors.New("cloudtasks: project, location, and queue must be non-empty")
+	}
 
 	e := &Enqueuer{
-		client:              client,
-		queuePath:           fmt.Sprintf("projects/%s/locations/%s/queues/%s", cfg.ProjectID, cfg.LocationID, cfg.QueueID),
-		targetURL:           cfg.TargetURL,
-		serviceAccountEmail: cfg.ServiceAccountEmail,
+		client:    client,
+		queuePath: fmt.Sprintf("projects/%s/locations/%s/queues/%s", project, location, queue),
 	}
 	for _, opt := range opts {
-		opt(e)
+		if err := opt(e); err != nil {
+			return nil, err
+		}
 	}
 	return e, nil
 }
 
 func (e *Enqueuer) Enqueue(ctx context.Context, p postera.Posterum) error {
 	if e.targetURL == "" {
-		return errors.New("cloudtasks: enqueue requires a non-empty TargetURL")
+		return errors.New("cloudtasks: enqueue: no target URL configured; use WithTargetURL")
 	}
 	httpReq := &taskspb.HttpRequest{
 		Url:        e.targetURL,
@@ -136,6 +168,7 @@ func (e *Enqueuer) Enqueue(ctx context.Context, p postera.Posterum) error {
 
 	if _, err := e.client.CreateTask(ctx, req); err != nil {
 		if status.Code(err) == codes.AlreadyExists {
+			// task name is derived from Posterum.ID; duplicate enqueues are safe to ignore
 			return nil
 		}
 		return fmt.Errorf("cloudtasks: create task %s: %w", p.ID, err)
@@ -161,23 +194,14 @@ func (e *Enqueuer) taskName(id string) string {
 }
 
 func (e *Enqueuer) headersFromPosterum(p postera.Posterum) map[string]string {
-	headers := make(map[string]string)
-	if e.humanHeader != "" && p.Human != "" {
-		headers[e.humanHeader] = p.Human
-	}
-	if e.agentHeader != "" && p.Agent != "" {
-		headers[e.agentHeader] = p.Agent
-	}
-	if e.sessionHeader != "" && p.Session != "" {
-		headers[e.sessionHeader] = p.Session
-	}
-	for _, m := range e.metadataHeaders {
-		if v, ok := p.Metadata[m.key]; ok && v != "" {
-			headers[m.headerName] = v
+	var headers map[string]string
+	for _, h := range e.headers {
+		if v := h.get(p); v != "" {
+			if headers == nil {
+				headers = make(map[string]string)
+			}
+			headers[h.headerName] = v
 		}
-	}
-	if len(headers) == 0 {
-		return nil
 	}
 	return headers
 }
