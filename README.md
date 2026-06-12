@@ -1,13 +1,11 @@
 # Postera
 
 ```
-██████╗  ██████╗ ███████╗████████╗███████╗██████╗  █████╗
-██╔══██╗██╔═══██╗██╔════╝╚══██╔══╝██╔════╝██╔══██╗██╔══██╗
-██████╔╝██║   ██║███████╗   ██║   █████╗  ██████╔╝███████║
-██╔═══╝ ██║   ██║╚════██║   ██║   ██╔══╝  ██╔══██╗██╔══██║
-██║     ╚██████╔╝███████║   ██║   ███████╗██║  ██║██║  ██║
-╚═╝      ╚═════╝ ╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝
-
+   _ \    _ \    ___| __ __|  ____|   _ \      \    
+  |   |  |   | \___ \    |    __|    |   |    _ \   
+  ___/   |   |       |   |    |      __ <    ___ \  
+ _|     \___/  _____/   _|   _____| _| \_\ _/    _\ 
+                                                    
 ```
 
 Postera is a Go SDK for scheduled messages in the human x agent layer. A `Posterum` is a message an agent sends to its future self on behalf of, or in relation to, a human.
@@ -22,7 +20,7 @@ AI agents are traditionally reactive. To build a truly autonomous agent ecosyste
 - **Atomic-ish Orchestration**: Coordinates Store (Persistence) and Enqueuer (Scheduler) with automatic rollback mechanisms to maintain data integrity.
 - **Explicit Query Context**: Supports multi-tenant storage through first-class `Human`, `Agent`, `Session`, and `Metadata` fields owned by the caller.
 - **Cloud Native**: Integrations available directly for GCP Cloud Tasks and PostgreSQL.
-- **ADK Integrated**: Native support for Google Agent Development Kit (ADK) to facilitate tool exposure to LLMs.
+- **Framework-Agnostic Toolset**: The `/agent` package exposes a framework-agnostic toolset. ADK integration is available as a separate module at `go.naturallyfunny.dev/adk`.
 
 ## Architecture
 
@@ -148,15 +146,21 @@ agentToolSet := agent.NewToolSet(postarius,
 
 ### 3. Setup ADK Toolset
 
-Convert the agent toolset to ADK-compatible tools:
+ADK integration is provided by a separate module. Install it first:
+
+```bash
+go get go.naturallyfunny.dev/adk
+```
+
+Then convert the agent toolset to ADK-compatible tools:
 
 ```go
 import (
-    "go.naturallyfunny.dev/postera/adk"
+    posteraadk "go.naturallyfunny.dev/adk"
 )
 
 // Get tools ready for agent use
-tools, _ := adk.Tools(agentToolSet)
+tools, _ := posteraadk.Tools(agentToolSet)
 ```
 
 ### 4. Assign the Tools to Your Agent (ADK Agent for Example)
@@ -174,6 +178,10 @@ myAgent := &adk.Agent{
 }
 ```
 
+## Roadmap
+
+- **Migration versioning**: The current `WithAutoMigrate()` runner re-executes all SQL files on every startup and relies on idempotent SQL. The plan is to replace this with a lightweight version-tracking runner (no external dependencies) so each migration runs exactly once and callers have full control over when migrations are applied.
+
 ## Project Structure
 
 | Directory     | Description                                                                       |
@@ -182,4 +190,3 @@ myAgent := &adk.Agent{
 | `/postgres`   | Store implementation using PostgreSQL with automatic schema migration support.    |
 | `/cloudtasks` | Enqueuer implementation using GCP Cloud Tasks.                                    |
 | `/agent`      | Framework-agnostic toolset adapter.                                               |
-| `/adk`        | Integration specific to Google Agent Development Kit.                             |

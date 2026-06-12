@@ -47,7 +47,7 @@ func (p *Postarius) Create(ctx context.Context, posterum Posterum) (Posterum, er
 	}
 
 	posterum.ID = generateID()
-	posterum.CreatedAt = now()
+	posterum.CreatedAt = time.Now().UTC()
 
 	if err := p.enqueuer.Enqueue(ctx, posterum); err != nil {
 		return Posterum{}, fmt.Errorf("postera: enqueue: %w", err)
@@ -105,8 +105,4 @@ func (p *Postarius) List(ctx context.Context, q Query) ([]Posterum, error) {
 		return nil, fmt.Errorf("postera: list: %w", err)
 	}
 	return entries, nil
-}
-
-func now() time.Time {
-	return time.Now().UTC()
 }
