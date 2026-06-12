@@ -3,6 +3,7 @@ package postera
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
 	"testing"
 	"time"
@@ -266,6 +267,53 @@ func TestCancelCallsEnqueueCancelAndStoreRemove(t *testing.T) {
 	}
 }
 
+func TestCancelScopedToContextIdentity(t *testing.T) {
+	posterum := Posterum{ID: "pstr_1", Human: "human-1", Agent: "agent-1", TriggerAt: time.Now().Add(time.Hour)}
+
+	t.Run("matching identity cancels", func(t *testing.T) {
+		store := &captureStore{get: posterum}
+		enq := &captureEnqueuer{}
+		p := New(store, enq, WithHumanFromContext(humanKey{}), WithAgentFromContext(agentKey{}))
+
+		ctx := context.WithValue(context.Background(), humanKey{}, "human-1")
+		ctx = context.WithValue(ctx, agentKey{}, "agent-1")
+		if err := p.Cancel(ctx, "pstr_1"); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+		if enq.canceledID != "pstr_1" {
+			t.Fatal("expected enqueuer.Cancel to be called for in-scope posterum")
+		}
+	})
+
+	t.Run("mismatched identity returns not found and does not cancel", func(t *testing.T) {
+		store := &captureStore{get: posterum}
+		enq := &captureEnqueuer{}
+		p := New(store, enq, WithHumanFromContext(humanKey{}))
+
+		ctx := context.WithValue(context.Background(), humanKey{}, "human-2")
+		err := p.Cancel(ctx, "pstr_1")
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("want ErrNotFound for out-of-scope posterum, got %v", err)
+		}
+		if enq.canceledID != "" {
+			t.Fatal("enqueuer.Cancel must not be called for out-of-scope posterum")
+		}
+	})
+
+	t.Run("no identity in context cancels any", func(t *testing.T) {
+		store := &captureStore{get: posterum}
+		enq := &captureEnqueuer{}
+		p := New(store, enq, WithHumanFromContext(humanKey{}))
+
+		if err := p.Cancel(context.Background(), "pstr_1"); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+		if enq.canceledID != "pstr_1" {
+			t.Fatal("expected cancel to proceed when no identity scope is present")
+		}
+	})
+}
+
 func TestCancelNotFoundError(t *testing.T) {
 	store := &captureStore{getErr: ErrNotFound}
 	p := New(store, &captureEnqueuer{})
@@ -273,6 +321,86 @@ func TestCancelNotFoundError(t *testing.T) {
 	err := p.Cancel(context.Background(), "pstr_1")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+type recordingHandler struct {
+	records []slog.Record
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.records = append(h.records, r)
+	return nil
+}
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
+
+func attrValue(r slog.Record, key string) (string, bool) {
+	var out string
+	var found bool
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			out, found = a.Value.String(), true
+			return false
+		}
+		return true
+	})
+	return out, found
+}
+
+func TestIdentityWarnsWhenKeyConfiguredButContextEmpty(t *testing.T) {
+	h := &recordingHandler{}
+	store := &captureStore{}
+	p := New(store, &captureEnqueuer{},
+		WithHumanFromContext(humanKey{}),
+		WithLogger(slog.New(h)),
+	)
+
+	if _, err := p.ListUpcoming(context.Background()); err != nil {
+		t.Fatalf("ListUpcoming: %v", err)
+	}
+
+	if len(h.records) != 1 {
+		t.Fatalf("want 1 warning, got %d", len(h.records))
+	}
+	rec := h.records[0]
+	if rec.Level != slog.LevelWarn {
+		t.Fatalf("want Warn level, got %s", rec.Level)
+	}
+	if field, ok := attrValue(rec, "field"); !ok || field != "human" {
+		t.Fatalf("want field=human, got %q (present=%v)", field, ok)
+	}
+	if op, ok := attrValue(rec, "operation"); !ok || op != "ListUpcoming" {
+		t.Fatalf("want operation=ListUpcoming, got %q (present=%v)", op, ok)
+	}
+}
+
+func TestIdentitySilentWhenKeyNotConfigured(t *testing.T) {
+	h := &recordingHandler{}
+	p := New(&captureStore{}, &captureEnqueuer{}, WithLogger(slog.New(h)))
+
+	if _, err := p.ListUpcoming(context.Background()); err != nil {
+		t.Fatalf("ListUpcoming: %v", err)
+	}
+	if len(h.records) != 0 {
+		t.Fatalf("expected no warnings when no identity key is configured, got %d", len(h.records))
+	}
+}
+
+func TestIdentitySilentWhenContextValuePresent(t *testing.T) {
+	h := &recordingHandler{}
+	p := New(&captureStore{}, &captureEnqueuer{},
+		WithHumanFromContext(humanKey{}),
+		WithLogger(slog.New(h)),
+	)
+
+	ctx := context.WithValue(context.Background(), humanKey{}, "human-1")
+	if _, err := p.ListUpcoming(ctx); err != nil {
+		t.Fatalf("ListUpcoming: %v", err)
+	}
+	if len(h.records) != 0 {
+		t.Fatalf("expected no warnings when identity is present, got %d", len(h.records))
 	}
 }
 

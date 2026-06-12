@@ -8,19 +8,27 @@
                                                     
 ```
 
-Postera is a Go SDK for scheduled messages in the human x agent layer. A `Posterum` is a message an agent sends to its future self on behalf of, or in relation to, a human.
+**Postera lets agents wake their future selves.** A `Posterum` is a message an agent sends forward to a future moment; when that moment arrives, Postera delivers it back and the agent wakes to act on it — instead of only reacting when called. Built on durable scheduling.
+
+In cognitive terms, Postera is an agent's **prospective memory** — remembering to act later. It is one of three sibling SDKs covering an agent's memory across time:
+
+| SDK | Memory type | What |
+|---|---|---|
+| Chronica | episodic | what has happened (session history) |
+| Cognita | semantic | what is known (knowledge graph) |
+| **Postera** | **prospective** | **what will happen (self-awakening)** |
 
 ## Background & Goals
 
-AI agents are traditionally reactive. To build a truly autonomous agent ecosystem, agents need the ability to plan and execute tasks beyond the current conversation session. Postera was built to address this challenge by providing safe and consistent orchestration between the persistence and infrastructure scheduling layers.
+AI agents are traditionally reactive — they act only when invoked. Postera lets an agent reach into its own future: schedule a self-addressed message for a later moment and be woken by it, carrying the human, agent, and session context it needs to know *why*. It is deliberately a thin, safe orchestration layer over a persistence store and an infrastructure scheduler — not a framework.
 
 ## Key Features
 
-- **Agent-First Scheduled Messaging**: Lets agents schedule future self-addressed messages with human, agent, session, and metadata context.
+- **Self-Awakening for Agents**: An agent schedules a self-addressed message for a future moment and is woken by it when the time comes — carrying human, agent, session, and metadata context.
 - **Atomic-ish Orchestration**: Coordinates Store (Persistence) and Enqueuer (Scheduler) with automatic rollback mechanisms to maintain data integrity.
 - **Explicit Query Context**: Supports multi-tenant storage through first-class `Human`, `Agent`, `Session`, and `Metadata` fields owned by the caller.
 - **Cloud Native**: Integrations available directly for GCP Cloud Tasks and PostgreSQL.
-- **Framework-Agnostic Toolset**: The `/agent` package exposes a framework-agnostic toolset. ADK integration is available as a separate module at `go.naturallyfunny.dev/adk`.
+- **Agent-First Interface**: Postarius is the agent tool directly — `Create`, `ListUpcoming`, and `Cancel` with identity and timezone resolved from context. ADK integration is available as a separate module at `go.naturallyfunny.dev/adk`.
 
 ## Architecture
 
@@ -154,12 +162,26 @@ myAgent := &adk.Agent{
 }
 ```
 
+## Ownership & Access Control
+
+Postera does **not** enforce ownership or authorization. The `Human`, `Agent`, and `Session` fields are identity for **filtering and propagation only** — never access control:
+
+- `Create` stamps them onto the posterum from context.
+- `ListUpcoming` filters results by them.
+- `Cancel` scopes to them — a posterum outside the caller's scope is reported as not found.
+
+All three honor the same identity, read from context via the `With*FromContext` options. Configure those keys once and every operation filters, stamps, and scopes by the same caller consistently.
+
+These checks are **bypassable** by any caller that holds the `Store` (it owns the database connection), so they are not a security boundary. Authentication, authorization, and tenant isolation belong **above** this SDK — at your HTTP/gRPC layer. In particular, when passing a model-supplied ID into `Cancel`, scope it to the authenticated identity first; an unguessable ID is not the same as an unleakable one.
+
+What Postera gives you is the *plumbing* to make that enforcement easy on your side — not a guarantee it performs on your behalf.
+
 ## Known Limitations
 
 These are known gaps to be aware of before using Postera in a production environment:
 
 - **No retry on transient errors**: Calls to Cloud Tasks (`Enqueue`, `Cancel`) and the Store are not retried on transient failures (e.g., gRPC `Unavailable`, network timeouts). Callers are responsible for wrapping with their own retry/backoff logic.
-- **No built-in observability**: There are no logging, metrics, or tracing hooks. Failures surface only as returned errors; there is no visibility into enqueue rates or latency without an external wrapper.
+- **Minimal observability**: There are no metrics or tracing hooks, and no operational logging of enqueue rates or latency — those require an external wrapper. The only built-in log is an optional diagnostic: pass `postera.WithLogger(slog.Logger)` and Postarius emits a `Warn` when an identity key is configured but its context value is empty (a likely sign context was not populated, leaving the operation unscoped). It is silent without `WithLogger`, and it diagnoses the misconfiguration rather than preventing it.
 - **Remove rollback fires immediately on past schedules**: If `store.Remove` fails after `enqueuer.Cancel` succeeds, the rollback re-enqueues the original `Posterum`. If `TriggerAt` is already in the past, Cloud Tasks will dispatch the task immediately rather than restoring the original schedule.
 - **Target URL is not format-validated**: `WithTargetURL` only rejects empty strings. A malformed URL will be accepted at construction time and rejected later by the Cloud Tasks API with a less informative error.
 

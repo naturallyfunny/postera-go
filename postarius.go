@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -40,6 +41,16 @@ type CreateArgs struct {
 	TriggerAt string
 }
 
+// Postarius is the agent-facing orchestrator for scheduled messages. It reads
+// caller identity (human, agent, session) and timezone from context using the
+// keys configured via the With*FromContext options, then coordinates the Store
+// and Enqueuer.
+//
+// Identity fields are used for filtering and propagation only — they are not
+// access control. Create stamps them onto the posterum, ListUpcoming filters by
+// them, and Cancel scopes to them. Every such check is bypassable by any caller
+// holding the Store, so authentication, authorization, and tenant isolation must
+// be enforced above this SDK. See the README's "Ownership & Access Control".
 type Postarius struct {
 	store       Store
 	enqueuer    Enqueuer
@@ -49,6 +60,7 @@ type Postarius struct {
 	agentKey    any
 	sessionKey  any
 	metadataKey any
+	logger      *slog.Logger
 }
 
 type Option func(*Postarius)
@@ -71,6 +83,10 @@ func WithTimezoneFromContext(key any) Option {
 	}
 }
 
+// WithHumanFromContext configures the context key from which the caller's human
+// identity is read. It applies uniformly across the surface: Create stamps it,
+// ListUpcoming filters by it, and Cancel scopes to it. It is an identity field
+// for filtering and propagation, not access control.
 func WithHumanFromContext(key any) Option {
 	if key == nil {
 		panic("postera: WithHumanFromContext: key must not be nil")
@@ -80,6 +96,10 @@ func WithHumanFromContext(key any) Option {
 	}
 }
 
+// WithAgentFromContext configures the context key for the caller's agent
+// identity. Like WithHumanFromContext, it is stamped, filtered, and scoped
+// uniformly across Create, ListUpcoming, and Cancel — for filtering and
+// propagation, not access control.
 func WithAgentFromContext(key any) Option {
 	if key == nil {
 		panic("postera: WithAgentFromContext: key must not be nil")
@@ -89,6 +109,10 @@ func WithAgentFromContext(key any) Option {
 	}
 }
 
+// WithSessionFromContext configures the context key for the caller's session
+// identity. Like WithHumanFromContext, it is stamped, filtered, and scoped
+// uniformly across Create, ListUpcoming, and Cancel — for filtering and
+// propagation, not access control.
 func WithSessionFromContext(key any) Option {
 	if key == nil {
 		panic("postera: WithSessionFromContext: key must not be nil")
@@ -98,12 +122,34 @@ func WithSessionFromContext(key any) Option {
 	}
 }
 
+// WithMetadataFromContext configures the context key for arbitrary k/v metadata
+// stamped onto the posterum at Create and propagated (e.g. as Cloud Tasks
+// headers) when the trigger fires. Unlike the identity fields, metadata is not
+// used for filtering or scoping.
 func WithMetadataFromContext(key any) Option {
 	if key == nil {
 		panic("postera: WithMetadataFromContext: key must not be nil")
 	}
 	return func(p *Postarius) {
 		p.metadataKey = key
+	}
+}
+
+// WithLogger enables diagnostic logging through l. The only event emitted is a
+// Warn when an identity key configured via a With*FromContext option resolves to
+// an empty context value — a likely sign the caller forgot to populate context,
+// leaving the operation unscoped for that field. Without WithLogger, Postarius is
+// silent.
+//
+// This is a debugging aid, not a guard: it records the misconfiguration, it does
+// not prevent the unscoped operation. To be intentionally unscoped without noise
+// (e.g. system tooling), use a Postarius constructed without that identity key.
+func WithLogger(l *slog.Logger) Option {
+	if l == nil {
+		panic("postera: WithLogger: logger must not be nil")
+	}
+	return func(p *Postarius) {
+		p.logger = l
 	}
 }
 
@@ -121,6 +167,10 @@ func New(store Store, enqueuer Enqueuer, opts ...Option) *Postarius {
 	return p
 }
 
+// Create schedules a new posterum. Message and TriggerAt come from args;
+// TriggerAt is a local datetime (TimeLayout) resolved against the caller's
+// timezone from context. Human, Agent, Session, and Metadata are read from
+// context and stamped onto the posterum; ID and CreatedAt are assigned here.
 func (p *Postarius) Create(ctx context.Context, args CreateArgs) (Posterum, error) {
 	loc, err := p.resolveLocation(ctx)
 	if err != nil {
@@ -162,16 +212,20 @@ func (p *Postarius) Create(ctx context.Context, args CreateArgs) (Posterum, erro
 	return posterum, nil
 }
 
+// ListUpcoming returns the caller's scheduled posterums from now onward, filtered
+// by the human, agent, and session identity read from context. An identity field
+// absent from context imposes no filter — so a caller with no identity in context
+// sees everything. Populate identity in context to scope the result to a caller.
 func (p *Postarius) ListUpcoming(ctx context.Context) ([]Posterum, error) {
-	human, err := stringFromContext(ctx, p.humanKey, "human")
+	human, err := p.identity(ctx, p.humanKey, "human", "ListUpcoming")
 	if err != nil {
 		return nil, err
 	}
-	agent, err := stringFromContext(ctx, p.agentKey, "agent")
+	agent, err := p.identity(ctx, p.agentKey, "agent", "ListUpcoming")
 	if err != nil {
 		return nil, err
 	}
-	session, err := stringFromContext(ctx, p.sessionKey, "session")
+	session, err := p.identity(ctx, p.sessionKey, "session", "ListUpcoming")
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +244,12 @@ func (p *Postarius) ListUpcoming(ctx context.Context) ([]Posterum, error) {
 	return results, nil
 }
 
+// Cancel removes a scheduled posterum by ID. It is scoped to the caller's
+// identity from context the same way ListUpcoming is: a posterum outside the
+// caller's scope is reported as ErrNotFound — indistinguishable from a genuinely
+// missing ID, which prevents cross-scope enumeration. A caller with no identity
+// in context can cancel any posterum. This scoping is filtering, not access
+// control — it is bypassable and must not be relied on as a security boundary.
 func (p *Postarius) Cancel(ctx context.Context, id string) error {
 	posterum, err := p.store.Get(ctx, id)
 	if err != nil {
@@ -197,6 +257,19 @@ func (p *Postarius) Cancel(ctx context.Context, id string) error {
 			return fmt.Errorf("postera: cancel: posterum not found: %w", err)
 		}
 		return fmt.Errorf("postera: cancel: %w", err)
+	}
+
+	// Scope the cancel to the caller's identity from context: a posterum outside
+	// the caller's scope is reported as not found, mirroring ListUpcoming's filter
+	// and preventing cross-scope enumeration. This is filtering, not access
+	// control — it is bypassable and must not be relied on as a security boundary
+	// (see README). Reuses the posterum already fetched above; no extra read.
+	inScope, err := p.inContextScope(ctx, posterum)
+	if err != nil {
+		return fmt.Errorf("postera: cancel: %w", err)
+	}
+	if !inScope {
+		return fmt.Errorf("postera: cancel: posterum not found: %w", ErrNotFound)
 	}
 
 	if err := p.enqueuer.Cancel(ctx, id); err != nil {
@@ -251,19 +324,73 @@ func (p *Postarius) resolveLocation(ctx context.Context) (*time.Location, error)
 
 func (p *Postarius) applyPosterumContext(ctx context.Context, posterum *Posterum) error {
 	var err error
-	if posterum.Human, err = stringFromContext(ctx, p.humanKey, "human"); err != nil {
+	if posterum.Human, err = p.identity(ctx, p.humanKey, "human", "Create"); err != nil {
 		return err
 	}
-	if posterum.Agent, err = stringFromContext(ctx, p.agentKey, "agent"); err != nil {
+	if posterum.Agent, err = p.identity(ctx, p.agentKey, "agent", "Create"); err != nil {
 		return err
 	}
-	if posterum.Session, err = stringFromContext(ctx, p.sessionKey, "session"); err != nil {
+	if posterum.Session, err = p.identity(ctx, p.sessionKey, "session", "Create"); err != nil {
 		return err
 	}
 	if posterum.Metadata, err = metadataFromContext(ctx, p.metadataKey); err != nil {
 		return err
 	}
 	return nil
+}
+
+// identity reads a configured identity field from context. When the field's key
+// is configured but the context value is empty, it emits a Warn through the
+// logger (if one is set via WithLogger): the operation will run unscoped for that
+// field, a common source of accidental cross-scope reads. A field whose key is
+// not configured is silent — absence is intentional, not a misconfiguration.
+func (p *Postarius) identity(ctx context.Context, key any, field, op string) (string, error) {
+	v, err := stringFromContext(ctx, key, field)
+	if err != nil {
+		return "", err
+	}
+	if key != nil && v == "" && p.logger != nil {
+		p.logger.WarnContext(ctx,
+			"postera: identity key configured but context value is empty; operation will not be scoped by this field",
+			slog.String("operation", op),
+			slog.String("field", field),
+		)
+	}
+	return v, nil
+}
+
+// inContextScope reports whether posterum falls within the caller's identity
+// scope, read from context. Each identity field is checked only when its context
+// key is configured and a non-empty value is present — an absent field imposes no
+// constraint, so a caller with no identity in context (e.g. system tooling) can
+// cancel any posterum. Comparison reuses the same context keys as Create and
+// ListUpcoming, so all three methods agree on what "the caller" means.
+func (p *Postarius) inContextScope(ctx context.Context, posterum Posterum) (bool, error) {
+	human, err := p.identity(ctx, p.humanKey, "human", "Cancel")
+	if err != nil {
+		return false, err
+	}
+	if human != "" && posterum.Human != human {
+		return false, nil
+	}
+
+	agent, err := p.identity(ctx, p.agentKey, "agent", "Cancel")
+	if err != nil {
+		return false, err
+	}
+	if agent != "" && posterum.Agent != agent {
+		return false, nil
+	}
+
+	session, err := p.identity(ctx, p.sessionKey, "session", "Cancel")
+	if err != nil {
+		return false, err
+	}
+	if session != "" && posterum.Session != session {
+		return false, nil
+	}
+
+	return true, nil
 }
 
 func stringFromContext(ctx context.Context, key any, field string) (string, error) {
