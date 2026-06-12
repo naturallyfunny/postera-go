@@ -69,7 +69,8 @@ client, _ := gcptasks.NewClient(ctx)
 defer client.Close()
 
 // Enqueuer configuration (GCP Cloud Tasks for example)
-enq, _ := cloudtasks.NewEnqueuer(client, cfg,
+enq, _ := cloudtasks.NewEnqueuer(client, "my-project", "us-central1", "my-queue",
+    cloudtasks.WithTargetURL("https://my-service.example.com/webhook"),
     cloudtasks.WithHumanHeader("x-postera-human"),
     cloudtasks.WithAgentHeader("x-postera-agent"),
     cloudtasks.WithSessionHeader("x-postera-session"),
@@ -177,6 +178,15 @@ myAgent := &adk.Agent{
     Tools: tools,
 }
 ```
+
+## Known Limitations
+
+These are known gaps to be aware of before using Postera in a production environment:
+
+- **No retry on transient errors**: Calls to Cloud Tasks (`Enqueue`, `Cancel`) and the Store are not retried on transient failures (e.g., gRPC `Unavailable`, network timeouts). Callers are responsible for wrapping with their own retry/backoff logic.
+- **No built-in observability**: There are no logging, metrics, or tracing hooks. Failures surface only as returned errors; there is no visibility into enqueue rates or latency without an external wrapper.
+- **Remove rollback fires immediately on past schedules**: If `store.Remove` fails after `enqueuer.Cancel` succeeds, the rollback re-enqueues the original `Posterum`. If `TriggerAt` is already in the past, Cloud Tasks will dispatch the task immediately rather than restoring the original schedule.
+- **Target URL is not format-validated**: `WithTargetURL` only rejects empty strings. A malformed URL will be accepted at construction time and rejected later by the Cloud Tasks API with a less informative error.
 
 ## Roadmap
 
