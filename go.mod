@@ -2,6 +2,12 @@ module go.naturallyfunny.dev/postera
 
 go 1.25.0
 
+// The v1.x series (v1.0.0–v1.16.0) was published by mistake; this SDK is
+// v0/unstable. Tag v1.17.0 exists only to carry these retractions so that
+// @latest resolves back to the v0.x line. Retracting the whole v1 range
+// (including v1.17.0 itself) makes v0.17.0 the highest non-retracted version.
+retract [v1.0.0, v1.17.0]
+
 require (
 	cloud.google.com/go/cloudtasks v1.16.0
 	github.com/jackc/pgx/v5 v5.9.2
