@@ -292,6 +292,18 @@ func (p *Postarius) Cancel(ctx context.Context, id string) error {
 	return nil
 }
 
+// LocalizesFromContext reports whether this Postarius resolves the timezone
+// per-request from context (configured via WithTimezoneFromContext). When true,
+// the local datetime an agent supplies as trigger_at and the times rendered
+// back to it share one consistent local frame, so a caller can truthfully tell
+// an agent that no timezone conversion is needed.
+//
+// It reflects configuration only. It does NOT guarantee the context actually
+// carries a (correct) timezone at call time — that remains the caller's
+// responsibility, the same way identity scoping is enforced above this SDK
+// (see "Ownership & Access Control"). Garbage-in/garbage-out is not policed here.
+func (p *Postarius) LocalizesFromContext() bool { return p.timezoneKey != nil }
+
 func (p *Postarius) LocationFromContext(ctx context.Context) *time.Location {
 	if p.timezoneKey != nil {
 		if v, ok := ctx.Value(p.timezoneKey).(string); ok && v != "" {

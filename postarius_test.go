@@ -404,6 +404,29 @@ func TestIdentitySilentWhenContextValuePresent(t *testing.T) {
 	}
 }
 
+func TestLocalizesFromContext(t *testing.T) {
+	t.Run("WithTimezoneFromContext returns true", func(t *testing.T) {
+		p, _, _ := newPostarius(WithTimezoneFromContext(timezoneKey{}))
+		if !p.LocalizesFromContext() {
+			t.Fatal("want true for WithTimezoneFromContext")
+		}
+	})
+
+	t.Run("no timezone option returns false", func(t *testing.T) {
+		p, _, _ := newPostarius()
+		if p.LocalizesFromContext() {
+			t.Fatal("want false when no timezone option is set")
+		}
+	})
+
+	t.Run("WithDefaultTimezone returns false", func(t *testing.T) {
+		p, _, _ := newPostarius(WithDefaultTimezone(time.UTC))
+		if p.LocalizesFromContext() {
+			t.Fatal("want false for WithDefaultTimezone — a default zone is not per-request context localization")
+		}
+	})
+}
+
 func TestLocationFromContextFallsBackToDefaultThenUTC(t *testing.T) {
 	jakarta, _ := time.LoadLocation("Asia/Jakarta")
 
