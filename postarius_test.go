@@ -12,7 +12,6 @@ import (
 type humanKey struct{}
 type agentKey struct{}
 type sessionKey struct{}
-type metadataKey struct{}
 type timezoneKey struct{}
 
 type captureStore struct {
@@ -119,14 +118,13 @@ func TestCreateAppliesIdentityFromContext(t *testing.T) {
 		WithHumanFromContext(humanKey{}),
 		WithAgentFromContext(agentKey{}),
 		WithSessionFromContext(sessionKey{}),
-		WithMetadataFromContext(metadataKey{}),
+		WithMetadataEntryFromContext("timezone", timezoneKey{}),
 	)
 
-	metadata := map[string]string{"timezone": "Asia/Jakarta"}
 	ctx := context.WithValue(context.Background(), humanKey{}, "human-1")
 	ctx = context.WithValue(ctx, agentKey{}, "agent-1")
 	ctx = context.WithValue(ctx, sessionKey{}, "session-1")
-	ctx = context.WithValue(ctx, metadataKey{}, metadata)
+	ctx = context.WithValue(ctx, timezoneKey{}, "Asia/Jakarta")
 
 	got, err := p.Create(ctx, CreateArgs{
 		Message:   "follow up",
@@ -139,13 +137,9 @@ func TestCreateAppliesIdentityFromContext(t *testing.T) {
 	if got.Human != "human-1" || got.Agent != "agent-1" || got.Session != "session-1" {
 		t.Fatalf("identity fields: %#v", got)
 	}
-	if !reflect.DeepEqual(got.Metadata, metadata) {
-		t.Fatalf("metadata: want %#v, got %#v", metadata, got.Metadata)
-	}
-	// verify metadata is copied, not shared
-	metadata["timezone"] = "UTC"
-	if got.Metadata["timezone"] != "Asia/Jakarta" {
-		t.Fatal("metadata should be copied before save")
+	want := map[string]string{"timezone": "Asia/Jakarta"}
+	if !reflect.DeepEqual(got.Metadata, want) {
+		t.Fatalf("metadata: want %#v, got %#v", want, got.Metadata)
 	}
 	if !reflect.DeepEqual(store.saved, got) {
 		t.Fatalf("saved posterum mismatch")

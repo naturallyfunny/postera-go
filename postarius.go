@@ -51,16 +51,21 @@ type CreateArgs struct {
 // them, and Cancel scopes to them. Every such check is bypassable by any caller
 // holding the Store, so authentication, authorization, and tenant isolation must
 // be enforced above this SDK. See the README's "Ownership & Access Control".
+type metadataEntry struct {
+	metaKey string
+	ctxKey  any
+}
+
 type Postarius struct {
-	store       Store
-	enqueuer    Enqueuer
-	defaultTZ   *time.Location
-	timezoneKey any
-	humanKey    any
-	agentKey    any
-	sessionKey  any
-	metadataKey any
-	logger      *slog.Logger
+	store           Store
+	enqueuer        Enqueuer
+	defaultTZ       *time.Location
+	timezoneKey     any
+	humanKey        any
+	agentKey        any
+	sessionKey      any
+	metadataEntries []metadataEntry
+	logger          *slog.Logger
 }
 
 type Option func(*Postarius)
@@ -122,16 +127,19 @@ func WithSessionFromContext(key any) Option {
 	}
 }
 
-// WithMetadataFromContext configures the context key for arbitrary k/v metadata
-// stamped onto the posterum at Create and propagated (e.g. as Cloud Tasks
-// headers) when the trigger fires. Unlike the identity fields, metadata is not
-// used for filtering or scoping.
-func WithMetadataFromContext(key any) Option {
-	if key == nil {
-		panic("postera: WithMetadataFromContext: key must not be nil")
+// WithMetadataEntryFromContext configures one metadata entry stamped onto the
+// posterum at Create: metaKey is the key written to Posterum.Metadata, ctxKey
+// is the context key whose string value is read at call time. Call once per
+// entry; entries with an empty context value are omitted from Metadata.
+func WithMetadataEntryFromContext(metaKey string, ctxKey any) Option {
+	if metaKey == "" {
+		panic("postera: WithMetadataEntryFromContext: metaKey must not be empty")
+	}
+	if ctxKey == nil {
+		panic("postera: WithMetadataEntryFromContext: ctxKey must not be nil")
 	}
 	return func(p *Postarius) {
-		p.metadataKey = key
+		p.metadataEntries = append(p.metadataEntries, metadataEntry{metaKey: metaKey, ctxKey: ctxKey})
 	}
 }
 
@@ -345,9 +353,20 @@ func (p *Postarius) applyPosterumContext(ctx context.Context, posterum *Posterum
 	if posterum.Session, err = p.identity(ctx, p.sessionKey, "session", "Create"); err != nil {
 		return err
 	}
-	if posterum.Metadata, err = metadataFromContext(ctx, p.metadataKey); err != nil {
-		return err
+	var metadata map[string]string
+	for _, e := range p.metadataEntries {
+		v, err := stringFromContext(ctx, e.ctxKey, e.metaKey)
+		if err != nil {
+			return err
+		}
+		if v != "" {
+			if metadata == nil {
+				metadata = make(map[string]string)
+			}
+			metadata[e.metaKey] = v
+		}
 	}
+	posterum.Metadata = metadata
 	return nil
 }
 
@@ -418,25 +437,6 @@ func stringFromContext(ctx context.Context, key any, field string) (string, erro
 		return "", fmt.Errorf("postera: %s context value must be a string, got %T", field, v)
 	}
 	return s, nil
-}
-
-func metadataFromContext(ctx context.Context, key any) (map[string]string, error) {
-	if key == nil {
-		return nil, nil
-	}
-	v := ctx.Value(key)
-	if v == nil {
-		return nil, nil
-	}
-	metadata, ok := v.(map[string]string)
-	if !ok {
-		return nil, fmt.Errorf("postera: metadata context value must be map[string]string, got %T", v)
-	}
-	copied := make(map[string]string, len(metadata))
-	for k, v := range metadata {
-		copied[k] = v
-	}
-	return copied, nil
 }
 
 func parseLocalTime(s string, loc *time.Location) (time.Time, error) {
