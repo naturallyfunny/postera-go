@@ -17,12 +17,10 @@ const (
 	idPrefix   = "pstr_"
 )
 
-func generateID() (string, error) {
+func generateID() string {
 	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("postera: generate id: %w", err)
-	}
-	return idPrefix + base64.RawURLEncoding.EncodeToString(b[:]), nil
+	rand.Read(b[:]) // never returns an error as of Go 1.24
+	return idPrefix + base64.RawURLEncoding.EncodeToString(b[:])
 }
 
 type Posterum struct {
@@ -207,11 +205,7 @@ func (p *Postarius) Create(ctx context.Context, args CreateArgs) (Posterum, erro
 		return Posterum{}, err
 	}
 
-	id, err := generateID()
-	if err != nil {
-		return Posterum{}, err
-	}
-	posterum.ID = id
+	posterum.ID = generateID()
 	posterum.CreatedAt = time.Now().UTC()
 
 	if err := p.enqueuer.Enqueue(ctx, posterum); err != nil {
