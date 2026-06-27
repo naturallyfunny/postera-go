@@ -56,15 +56,29 @@ func (e *captureEnqueuer) Cancel(_ context.Context, id string) error {
 	return nil
 }
 
-func newPostarius(opts ...Option) (*Postarius, *captureStore, *captureEnqueuer) {
+func newPostarius(t *testing.T, opts ...Option) (*Postarius, *captureStore, *captureEnqueuer) {
+	t.Helper()
 	store := &captureStore{}
 	enqueuer := &captureEnqueuer{}
-	return New(store, enqueuer, opts...), store, enqueuer
+	p, err := New(store, enqueuer, opts...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return p, store, enqueuer
+}
+
+func mustNew(t *testing.T, store Store, enqueuer Enqueuer, opts ...Option) *Postarius {
+	t.Helper()
+	p, err := New(store, enqueuer, opts...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return p
 }
 
 func TestCreateParsesLocalTimeWithDefaultTimezone(t *testing.T) {
 	loc, _ := time.LoadLocation("Asia/Jakarta")
-	p, store, enqueuer := newPostarius(WithDefaultTimezone(loc))
+	p, store, enqueuer := newPostarius(t, WithDefaultTimezone(loc))
 
 	got, err := p.Create(context.Background(), CreateArgs{
 		Message:   "follow up",
@@ -93,7 +107,7 @@ func TestCreateParsesLocalTimeWithDefaultTimezone(t *testing.T) {
 }
 
 func TestCreateParsesLocalTimeWithTimezoneFromContext(t *testing.T) {
-	p, _, _ := newPostarius(WithTimezoneFromContext(timezoneKey{}))
+	p, _, _ := newPostarius(t, WithTimezoneFromContext(timezoneKey{}))
 
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 	ctx := context.WithValue(context.Background(), timezoneKey{}, "Asia/Jakarta")
@@ -113,7 +127,7 @@ func TestCreateParsesLocalTimeWithTimezoneFromContext(t *testing.T) {
 }
 
 func TestCreateAppliesIdentityFromContext(t *testing.T) {
-	p, store, _ := newPostarius(
+	p, store, _ := newPostarius(t,
 		WithDefaultTimezone(time.UTC),
 		WithHumanFromContext(humanKey{}),
 		WithAgentFromContext(agentKey{}),
@@ -147,7 +161,7 @@ func TestCreateAppliesIdentityFromContext(t *testing.T) {
 }
 
 func TestCreateMissingIdentityAllowed(t *testing.T) {
-	p, _, _ := newPostarius(
+	p, _, _ := newPostarius(t,
 		WithDefaultTimezone(time.UTC),
 		WithHumanFromContext(humanKey{}),
 	)
@@ -165,7 +179,7 @@ func TestCreateMissingIdentityAllowed(t *testing.T) {
 }
 
 func TestCreateErrorsWhenNoTimezone(t *testing.T) {
-	p, _, _ := newPostarius()
+	p, _, _ := newPostarius(t)
 
 	_, err := p.Create(context.Background(), CreateArgs{
 		Message:   "follow up",
@@ -177,7 +191,7 @@ func TestCreateErrorsWhenNoTimezone(t *testing.T) {
 }
 
 func TestCreateErrorsOnInvalidDatetime(t *testing.T) {
-	p, _, _ := newPostarius(WithDefaultTimezone(time.UTC))
+	p, _, _ := newPostarius(t, WithDefaultTimezone(time.UTC))
 
 	_, err := p.Create(context.Background(), CreateArgs{
 		Message:   "follow up",
@@ -189,7 +203,7 @@ func TestCreateErrorsOnInvalidDatetime(t *testing.T) {
 }
 
 func TestCreateErrorsOnWrongContextType(t *testing.T) {
-	p, _, _ := newPostarius(
+	p, _, _ := newPostarius(t,
 		WithDefaultTimezone(time.UTC),
 		WithHumanFromContext(humanKey{}),
 	)
@@ -205,7 +219,7 @@ func TestCreateErrorsOnWrongContextType(t *testing.T) {
 }
 
 func TestCreateErrorsOnInvalidTimezoneInContext(t *testing.T) {
-	p, _, _ := newPostarius(WithTimezoneFromContext(timezoneKey{}))
+	p, _, _ := newPostarius(t, WithTimezoneFromContext(timezoneKey{}))
 
 	ctx := context.WithValue(context.Background(), timezoneKey{}, "Not/ATimezone")
 	_, err := p.Create(ctx, CreateArgs{
@@ -218,7 +232,7 @@ func TestCreateErrorsOnInvalidTimezoneInContext(t *testing.T) {
 }
 
 func TestListUpcomingBuildsQueryFromContext(t *testing.T) {
-	p, store, _ := newPostarius(
+	p, store, _ := newPostarius(t,
 		WithHumanFromContext(humanKey{}),
 		WithAgentFromContext(agentKey{}),
 		WithSessionFromContext(sessionKey{}),
@@ -250,7 +264,7 @@ func TestCancelCallsEnqueueCancelAndStoreRemove(t *testing.T) {
 	posterum := Posterum{ID: "pstr_1", Message: "hello", TriggerAt: time.Now().Add(time.Hour)}
 	store := &captureStore{get: posterum}
 	enqueuer := &captureEnqueuer{}
-	p := New(store, enqueuer)
+	p := mustNew(t, store, enqueuer)
 
 	err := p.Cancel(context.Background(), "pstr_1")
 	if err != nil {
@@ -267,7 +281,7 @@ func TestCancelScopedToContextIdentity(t *testing.T) {
 	t.Run("matching identity cancels", func(t *testing.T) {
 		store := &captureStore{get: posterum}
 		enq := &captureEnqueuer{}
-		p := New(store, enq, WithHumanFromContext(humanKey{}), WithAgentFromContext(agentKey{}))
+		p := mustNew(t, store, enq, WithHumanFromContext(humanKey{}), WithAgentFromContext(agentKey{}))
 
 		ctx := context.WithValue(context.Background(), humanKey{}, "human-1")
 		ctx = context.WithValue(ctx, agentKey{}, "agent-1")
@@ -282,7 +296,7 @@ func TestCancelScopedToContextIdentity(t *testing.T) {
 	t.Run("mismatched identity returns not found and does not cancel", func(t *testing.T) {
 		store := &captureStore{get: posterum}
 		enq := &captureEnqueuer{}
-		p := New(store, enq, WithHumanFromContext(humanKey{}))
+		p := mustNew(t, store, enq, WithHumanFromContext(humanKey{}))
 
 		ctx := context.WithValue(context.Background(), humanKey{}, "human-2")
 		err := p.Cancel(ctx, "pstr_1")
@@ -297,7 +311,7 @@ func TestCancelScopedToContextIdentity(t *testing.T) {
 	t.Run("no identity in context cancels any", func(t *testing.T) {
 		store := &captureStore{get: posterum}
 		enq := &captureEnqueuer{}
-		p := New(store, enq, WithHumanFromContext(humanKey{}))
+		p := mustNew(t, store, enq, WithHumanFromContext(humanKey{}))
 
 		if err := p.Cancel(context.Background(), "pstr_1"); err != nil {
 			t.Fatalf("Cancel: %v", err)
@@ -310,7 +324,7 @@ func TestCancelScopedToContextIdentity(t *testing.T) {
 
 func TestCancelNotFoundError(t *testing.T) {
 	store := &captureStore{getErr: ErrNotFound}
-	p := New(store, &captureEnqueuer{})
+	p := mustNew(t, store, &captureEnqueuer{})
 
 	err := p.Cancel(context.Background(), "pstr_1")
 	if !errors.Is(err, ErrNotFound) {
@@ -345,8 +359,7 @@ func attrValue(r slog.Record, key string) (string, bool) {
 
 func TestIdentityWarnsWhenKeyConfiguredButContextEmpty(t *testing.T) {
 	h := &recordingHandler{}
-	store := &captureStore{}
-	p := New(store, &captureEnqueuer{},
+	p := mustNew(t, &captureStore{}, &captureEnqueuer{},
 		WithHumanFromContext(humanKey{}),
 		WithLogger(slog.New(h)),
 	)
@@ -372,7 +385,7 @@ func TestIdentityWarnsWhenKeyConfiguredButContextEmpty(t *testing.T) {
 
 func TestIdentitySilentWhenKeyNotConfigured(t *testing.T) {
 	h := &recordingHandler{}
-	p := New(&captureStore{}, &captureEnqueuer{}, WithLogger(slog.New(h)))
+	p := mustNew(t, &captureStore{}, &captureEnqueuer{}, WithLogger(slog.New(h)))
 
 	if _, err := p.ListUpcoming(context.Background()); err != nil {
 		t.Fatalf("ListUpcoming: %v", err)
@@ -384,7 +397,7 @@ func TestIdentitySilentWhenKeyNotConfigured(t *testing.T) {
 
 func TestIdentitySilentWhenContextValuePresent(t *testing.T) {
 	h := &recordingHandler{}
-	p := New(&captureStore{}, &captureEnqueuer{},
+	p := mustNew(t, &captureStore{}, &captureEnqueuer{},
 		WithHumanFromContext(humanKey{}),
 		WithLogger(slog.New(h)),
 	)
@@ -400,21 +413,21 @@ func TestIdentitySilentWhenContextValuePresent(t *testing.T) {
 
 func TestLocalizesFromContext(t *testing.T) {
 	t.Run("WithTimezoneFromContext returns true", func(t *testing.T) {
-		p, _, _ := newPostarius(WithTimezoneFromContext(timezoneKey{}))
+		p, _, _ := newPostarius(t, WithTimezoneFromContext(timezoneKey{}))
 		if !p.LocalizesFromContext() {
 			t.Fatal("want true for WithTimezoneFromContext")
 		}
 	})
 
 	t.Run("no timezone option returns false", func(t *testing.T) {
-		p, _, _ := newPostarius()
+		p, _, _ := newPostarius(t)
 		if p.LocalizesFromContext() {
 			t.Fatal("want false when no timezone option is set")
 		}
 	})
 
 	t.Run("WithDefaultTimezone returns false", func(t *testing.T) {
-		p, _, _ := newPostarius(WithDefaultTimezone(time.UTC))
+		p, _, _ := newPostarius(t, WithDefaultTimezone(time.UTC))
 		if p.LocalizesFromContext() {
 			t.Fatal("want false for WithDefaultTimezone — a default zone is not per-request context localization")
 		}
@@ -425,7 +438,7 @@ func TestLocationFromContextFallsBackToDefaultThenUTC(t *testing.T) {
 	jakarta, _ := time.LoadLocation("Asia/Jakarta")
 
 	t.Run("from context", func(t *testing.T) {
-		p, _, _ := newPostarius(WithTimezoneFromContext(timezoneKey{}))
+		p, _, _ := newPostarius(t, WithTimezoneFromContext(timezoneKey{}))
 		ctx := context.WithValue(context.Background(), timezoneKey{}, "Asia/Jakarta")
 		if got := p.LocationFromContext(ctx); got.String() != "Asia/Jakarta" {
 			t.Fatalf("want Asia/Jakarta, got %s", got)
@@ -433,14 +446,14 @@ func TestLocationFromContextFallsBackToDefaultThenUTC(t *testing.T) {
 	})
 
 	t.Run("from default", func(t *testing.T) {
-		p, _, _ := newPostarius(WithDefaultTimezone(jakarta))
+		p, _, _ := newPostarius(t, WithDefaultTimezone(jakarta))
 		if got := p.LocationFromContext(context.Background()); got.String() != "Asia/Jakarta" {
 			t.Fatalf("want Asia/Jakarta, got %s", got)
 		}
 	})
 
 	t.Run("falls back to UTC", func(t *testing.T) {
-		p, _, _ := newPostarius()
+		p, _, _ := newPostarius(t)
 		if got := p.LocationFromContext(context.Background()); got != time.UTC {
 			t.Fatalf("want UTC, got %s", got)
 		}

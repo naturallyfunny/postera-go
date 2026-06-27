@@ -68,23 +68,25 @@ type Postarius struct {
 	logger          *slog.Logger
 }
 
-type Option func(*Postarius)
+type Option func(*Postarius) error
 
 func WithDefaultTimezone(loc *time.Location) Option {
-	if loc == nil {
-		panic("postera: WithDefaultTimezone: loc must not be nil")
-	}
-	return func(p *Postarius) {
+	return func(p *Postarius) error {
+		if loc == nil {
+			return errors.New("postera: WithDefaultTimezone: loc must not be nil")
+		}
 		p.defaultTZ = loc
+		return nil
 	}
 }
 
 func WithTimezoneFromContext(key any) Option {
-	if key == nil {
-		panic("postera: WithTimezoneFromContext: key must not be nil")
-	}
-	return func(p *Postarius) {
+	return func(p *Postarius) error {
+		if key == nil {
+			return errors.New("postera: WithTimezoneFromContext: key must not be nil")
+		}
 		p.timezoneKey = key
+		return nil
 	}
 }
 
@@ -93,11 +95,12 @@ func WithTimezoneFromContext(key any) Option {
 // ListUpcoming filters by it, and Cancel scopes to it. It is an identity field
 // for filtering and propagation, not access control.
 func WithHumanFromContext(key any) Option {
-	if key == nil {
-		panic("postera: WithHumanFromContext: key must not be nil")
-	}
-	return func(p *Postarius) {
+	return func(p *Postarius) error {
+		if key == nil {
+			return errors.New("postera: WithHumanFromContext: key must not be nil")
+		}
 		p.humanKey = key
+		return nil
 	}
 }
 
@@ -106,11 +109,12 @@ func WithHumanFromContext(key any) Option {
 // uniformly across Create, ListUpcoming, and Cancel — for filtering and
 // propagation, not access control.
 func WithAgentFromContext(key any) Option {
-	if key == nil {
-		panic("postera: WithAgentFromContext: key must not be nil")
-	}
-	return func(p *Postarius) {
+	return func(p *Postarius) error {
+		if key == nil {
+			return errors.New("postera: WithAgentFromContext: key must not be nil")
+		}
 		p.agentKey = key
+		return nil
 	}
 }
 
@@ -119,11 +123,12 @@ func WithAgentFromContext(key any) Option {
 // uniformly across Create, ListUpcoming, and Cancel — for filtering and
 // propagation, not access control.
 func WithSessionFromContext(key any) Option {
-	if key == nil {
-		panic("postera: WithSessionFromContext: key must not be nil")
-	}
-	return func(p *Postarius) {
+	return func(p *Postarius) error {
+		if key == nil {
+			return errors.New("postera: WithSessionFromContext: key must not be nil")
+		}
 		p.sessionKey = key
+		return nil
 	}
 }
 
@@ -132,14 +137,15 @@ func WithSessionFromContext(key any) Option {
 // is the context key whose string value is read at call time. Call once per
 // entry; entries with an empty context value are omitted from Metadata.
 func WithMetadataEntryFromContext(metaKey string, ctxKey any) Option {
-	if metaKey == "" {
-		panic("postera: WithMetadataEntryFromContext: metaKey must not be empty")
-	}
-	if ctxKey == nil {
-		panic("postera: WithMetadataEntryFromContext: ctxKey must not be nil")
-	}
-	return func(p *Postarius) {
+	return func(p *Postarius) error {
+		if metaKey == "" {
+			return errors.New("postera: WithMetadataEntryFromContext: metaKey must not be empty")
+		}
+		if ctxKey == nil {
+			return errors.New("postera: WithMetadataEntryFromContext: ctxKey must not be nil")
+		}
 		p.metadataEntries = append(p.metadataEntries, metadataEntry{metaKey: metaKey, ctxKey: ctxKey})
+		return nil
 	}
 }
 
@@ -153,26 +159,29 @@ func WithMetadataEntryFromContext(metaKey string, ctxKey any) Option {
 // not prevent the unscoped operation. To be intentionally unscoped without noise
 // (e.g. system tooling), use a Postarius constructed without that identity key.
 func WithLogger(l *slog.Logger) Option {
-	if l == nil {
-		panic("postera: WithLogger: logger must not be nil")
-	}
-	return func(p *Postarius) {
+	return func(p *Postarius) error {
+		if l == nil {
+			return errors.New("postera: WithLogger: logger must not be nil")
+		}
 		p.logger = l
+		return nil
 	}
 }
 
-func New(store Store, enqueuer Enqueuer, opts ...Option) *Postarius {
+func New(store Store, enqueuer Enqueuer, opts ...Option) (*Postarius, error) {
 	if store == nil {
-		panic("postera: New: store must not be nil")
+		return nil, errors.New("postera: New: store must not be nil")
 	}
 	if enqueuer == nil {
-		panic("postera: New: enqueuer must not be nil")
+		return nil, errors.New("postera: New: enqueuer must not be nil")
 	}
 	p := &Postarius{store: store, enqueuer: enqueuer}
 	for _, opt := range opts {
-		opt(p)
+		if err := opt(p); err != nil {
+			return nil, err
+		}
 	}
-	return p
+	return p, nil
 }
 
 // Create schedules a new posterum. Message and TriggerAt come from args;
