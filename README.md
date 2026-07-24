@@ -25,7 +25,7 @@ AI agents are traditionally reactive — they act only when invoked. Postera let
 ## Key Features
 
 - **Self-Awakening for Agents**: An agent schedules a self-addressed message for a future moment and is woken by it when the time comes — carrying human, agent, session, and metadata context.
-- **Atomic-ish Orchestration**: Coordinates Store (Persistence) and Enqueuer (Scheduler) with automatic rollback mechanisms to maintain data integrity.
+- **Atomic-ish Orchestration**: Coordinates Store (Persistence) and Queue (Scheduler) with automatic rollback mechanisms to maintain data integrity.
 - **Explicit Query Context**: Supports multi-tenant storage through first-class `Human`, `Agent`, `Session`, and `Metadata` fields owned by the caller.
 - **Cloud Native**: Integrations available directly for GCP Cloud Tasks and PostgreSQL.
 - **Agent-First Interface**: Postarius is the agent tool directly — `Create`, `ListUpcoming`, and `Cancel` with identity and timezone resolved from context. ADK integration is available as a separate module at `go.naturallyfunny.dev/adk`.
@@ -35,7 +35,7 @@ AI agents are traditionally reactive — they act only when invoked. Postera let
 Postera operates through a central orchestrator called **Postarius**, which manages two primary interfaces:
 
 - **Store**: Handles persistent storage of scheduled messages (e.g., using PostgreSQL).
-- **Enqueuer**: Schedules infrastructure-level triggers (e.g., using GCP Cloud Tasks).
+- **Queue**: Schedules infrastructure-level triggers (e.g., using GCP Cloud Tasks).
 
 ## Installation
 
@@ -49,7 +49,7 @@ go get go.naturallyfunny.dev/postera
 
 ### 1. Setup Postarius
 
-Postarius requires a Store (for persistence) and an Enqueuer (for scheduling), plus options to declare how identity and timezone are propagated through context.
+Postarius requires a Store (for persistence) and a Queue (for scheduling), plus options to declare how identity and timezone are propagated through context.
 
 #### 1.1 Setup Store (Using PostgreSQL as example)
 
@@ -61,7 +61,7 @@ store, _ := postgres.NewStore(ctx, dbPool,
 )
 ```
 
-#### 1.2 Setup Enqueuer (Using Cloud Tasks as example)
+#### 1.2 Setup Queue (Using Cloud Tasks as example)
 
 ```go
 import (
@@ -72,7 +72,7 @@ import (
 client, _ := gcptasks.NewClient(ctx)
 defer client.Close()
 
-enq, _ := cloudtasks.NewEnqueuer(client, "my-project", "us-central1", "my-queue",
+queue, _ := cloudtasks.NewQueue(client, "my-project", "us-central1", "my-queue",
     cloudtasks.WithTargetURL("https://my-service.example.com/webhook"),
     cloudtasks.WithHumanHeader("x-postera-human"),
     cloudtasks.WithAgentHeader("x-postera-agent"),
@@ -92,7 +92,7 @@ type agentKey struct{}
 type sessionKey struct{}
 type metadataKey struct{}
 
-postarius := postera.New(store, enq,
+postarius := postera.New(store, queue,
     postera.WithTimezoneFromContext(timezoneKey{}),
     postera.WithHumanFromContext(humanKey{}),
     postera.WithAgentFromContext(agentKey{}),
@@ -104,7 +104,7 @@ postarius := postera.New(store, enq,
 For single-timezone deployments, use `WithDefaultTimezone` instead of `WithTimezoneFromContext`:
 
 ```go
-postarius := postera.New(store, enq,
+postarius := postera.New(store, queue,
     postera.WithDefaultTimezone(time.UTC),
     postera.WithHumanFromContext(humanKey{}),
     // ...
@@ -182,7 +182,7 @@ These are known gaps to be aware of before using Postera in a production environ
 
 - **No retry on transient errors**: Calls to Cloud Tasks (`Enqueue`, `Cancel`) and the Store are not retried on transient failures (e.g., gRPC `Unavailable`, network timeouts). Callers are responsible for wrapping with their own retry/backoff logic.
 - **Minimal observability**: There are no metrics or tracing hooks, and no operational logging of enqueue rates or latency — those require an external wrapper. The only built-in log is an optional diagnostic: pass `postera.WithLogger(slog.Logger)` and Postarius emits a `Warn` when an identity key is configured but its context value is empty (a likely sign context was not populated, leaving the operation unscoped). It is silent without `WithLogger`, and it diagnoses the misconfiguration rather than preventing it.
-- **Remove rollback fires immediately on past schedules**: If `store.Remove` fails after `enqueuer.Cancel` succeeds, the rollback re-enqueues the original `Posterum`. If `TriggerAt` is already in the past, Cloud Tasks will dispatch the task immediately rather than restoring the original schedule.
+- **Remove rollback fires immediately on past schedules**: If `store.Remove` fails after `queue.Cancel` succeeds, the rollback re-enqueues the original `Posterum`. If `TriggerAt` is already in the past, Cloud Tasks will dispatch the task immediately rather than restoring the original schedule.
 - **Target URL is not format-validated**: `WithTargetURL` only rejects empty strings. A malformed URL will be accepted at construction time and rejected later by the Cloud Tasks API with a less informative error.
 
 ## Roadmap
@@ -195,4 +195,4 @@ These are known gaps to be aware of before using Postera in a production environ
 | ------------- | --------------------------------------------------------------------------------- |
 | `/`           | Core interfaces and Postarius orchestrator logic.                                 |
 | `/postgres`   | Store implementation using PostgreSQL with automatic schema migration support.    |
-| `/cloudtasks` | Enqueuer implementation using GCP Cloud Tasks.                                    |
+| `/cloudtasks` | Queue implementation using GCP Cloud Tasks.                                      |

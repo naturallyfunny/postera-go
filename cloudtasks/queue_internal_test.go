@@ -15,15 +15,15 @@ func validPosterum() postera.Posterum {
 	}
 }
 
-func enqueuerWithHeaders(t *testing.T, opts ...Option) *Enqueuer {
+func queueWithHeaders(t *testing.T, opts ...Option) *Queue {
 	t.Helper()
-	e := &Enqueuer{}
+	q := &Queue{}
 	for _, opt := range opts {
-		if err := opt(e); err != nil {
+		if err := opt(q); err != nil {
 			t.Fatalf("option error: %v", err)
 		}
 	}
-	return e
+	return q
 }
 
 func TestHeadersFromPosterumIdentityFields(t *testing.T) {
@@ -59,11 +59,11 @@ func TestHeadersFromPosterumIdentityFields(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			e := enqueuerWithHeaders(t, tc.option)
+			q := queueWithHeaders(t, tc.option)
 			p := validPosterum()
 			tc.modify(&p)
 
-			headers := e.headersFromPosterum(p)
+			headers := q.headersFromPosterum(p)
 			if got := headers[tc.headerName]; got != tc.want {
 				t.Fatalf("header %s: want %q, got %q", tc.headerName, tc.want, got)
 			}
@@ -72,20 +72,20 @@ func TestHeadersFromPosterumIdentityFields(t *testing.T) {
 }
 
 func TestHeadersFromPosterumOmitsEmptyIdentityFields(t *testing.T) {
-	e := enqueuerWithHeaders(t,
+	q := queueWithHeaders(t,
 		WithHumanHeader("x-human"),
 		WithAgentHeader("x-agent"),
 		WithSessionHeader("x-session"),
 	)
 
-	headers := e.headersFromPosterum(validPosterum())
+	headers := q.headersFromPosterum(validPosterum())
 	if headers != nil {
 		t.Fatalf("want nil headers for empty identity fields, got %v", headers)
 	}
 }
 
 func TestHeadersFromPosterumMetadata(t *testing.T) {
-	e := enqueuerWithHeaders(t,
+	q := queueWithHeaders(t,
 		WithMetadataHeader("timezone", "x-timezone"),
 		WithMetadataHeader("trace", "x-trace"),
 		WithMetadataHeader("locale", "x-locale"),
@@ -96,7 +96,7 @@ func TestHeadersFromPosterumMetadata(t *testing.T) {
 		"trace":    "",
 	}
 
-	headers := e.headersFromPosterum(p)
+	headers := q.headersFromPosterum(p)
 	if got := headers["x-timezone"]; got != "Asia/Jakarta" {
 		t.Fatalf("metadata header: want %q, got %q", "Asia/Jakarta", got)
 	}
@@ -109,14 +109,14 @@ func TestHeadersFromPosterumMetadata(t *testing.T) {
 }
 
 func TestHeadersFromPosterumFixedHeader(t *testing.T) {
-	e := enqueuerWithHeaders(t,
+	q := queueWithHeaders(t,
 		WithFixedHeader("Content-Type", "application/json"),
 		WithHumanHeader("x-human"),
 	)
 	p := validPosterum()
 	p.Human = "user-1"
 
-	headers := e.headersFromPosterum(p)
+	headers := q.headersFromPosterum(p)
 	if got := headers["Content-Type"]; got != "application/json" {
 		t.Fatalf("Content-Type: want %q, got %q", "application/json", got)
 	}
@@ -126,19 +126,19 @@ func TestHeadersFromPosterumFixedHeader(t *testing.T) {
 }
 
 func TestHeadersFromPosterumFixedHeaderAlwaysPresent(t *testing.T) {
-	e := enqueuerWithHeaders(t,
+	q := queueWithHeaders(t,
 		WithFixedHeader("Content-Type", "application/json"),
 	)
 
-	headers := e.headersFromPosterum(validPosterum())
+	headers := q.headersFromPosterum(validPosterum())
 	if got := headers["Content-Type"]; got != "application/json" {
 		t.Fatalf("fixed header should always be present, got %q", got)
 	}
 }
 
 func TestHeadersFromPosterumNilWhenNoMappings(t *testing.T) {
-	e := &Enqueuer{}
-	if headers := e.headersFromPosterum(validPosterum()); headers != nil {
+	q := &Queue{}
+	if headers := q.headersFromPosterum(validPosterum()); headers != nil {
 		t.Fatalf("want nil with no mappings, got %v", headers)
 	}
 }

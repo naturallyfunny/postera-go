@@ -10,7 +10,7 @@ import (
 	"go.naturallyfunny.dev/postera/cloudtasks"
 )
 
-func TestNewEnqueuerRequiresQueueFields(t *testing.T) {
+func TestNewQueueRequiresQueueFields(t *testing.T) {
 	tests := []struct {
 		name             string
 		project          string
@@ -37,7 +37,7 @@ func TestNewEnqueuerRequiresQueueFields(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := cloudtasks.NewEnqueuer(nil, tc.project, tc.location, tc.queue)
+			_, err := cloudtasks.NewQueue(nil, tc.project, tc.location, tc.queue)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -48,17 +48,17 @@ func TestNewEnqueuerRequiresQueueFields(t *testing.T) {
 	}
 }
 
-func TestNewEnqueuerAcceptsNoOptions(t *testing.T) {
-	_, err := cloudtasks.NewEnqueuer(nil, "proj", "us-central1", "q")
+func TestNewQueueAcceptsNoOptions(t *testing.T) {
+	_, err := cloudtasks.NewQueue(nil, "proj", "us-central1", "q")
 	if err != nil {
-		t.Fatalf("NewEnqueuer with no options: %v", err)
+		t.Fatalf("NewQueue with no options: %v", err)
 	}
 }
 
 func TestEnqueueReturnsErrorWhenNoTargetURL(t *testing.T) {
-	enq, err := cloudtasks.NewEnqueuer(nil, "proj", "us-central1", "q")
+	enq, err := cloudtasks.NewQueue(nil, "proj", "us-central1", "q")
 	if err != nil {
-		t.Fatalf("NewEnqueuer: %v", err)
+		t.Fatalf("NewQueue: %v", err)
 	}
 
 	p := postera.Posterum{
@@ -75,7 +75,7 @@ func TestEnqueueReturnsErrorWhenNoTargetURL(t *testing.T) {
 	}
 }
 
-func TestNewEnqueuerRejectsEmptyHeaderOption(t *testing.T) {
+func TestNewQueueRejectsEmptyHeaderOption(t *testing.T) {
 	tests := []struct {
 		name   string
 		option cloudtasks.Option
@@ -130,7 +130,7 @@ func TestNewEnqueuerRejectsEmptyHeaderOption(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := cloudtasks.NewEnqueuer(nil, "proj", "us-central1", "q", tc.option)
+			_, err := cloudtasks.NewQueue(nil, "proj", "us-central1", "q", tc.option)
 			if err == nil {
 				t.Fatalf("expected error for %s, got nil", tc.name)
 			}

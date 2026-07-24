@@ -42,7 +42,7 @@ type CreateArgs struct {
 // Postarius is the agent-facing orchestrator for scheduled messages. It reads
 // caller identity (human, agent, session) and timezone from context using the
 // keys configured via the With*FromContext options, then coordinates the Store
-// and Enqueuer.
+// and Queue.
 //
 // Identity fields are used for filtering and propagation only — they are not
 // access control. Create stamps them onto the posterum, ListUpcoming filters by
@@ -56,7 +56,7 @@ type metadataEntry struct {
 
 type Postarius struct {
 	store           Store
-	enqueuer        Enqueuer
+	queue           Queue
 	defaultTZ       *time.Location
 	timezoneKey     any
 	humanKey        any
@@ -166,14 +166,14 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-func New(store Store, enqueuer Enqueuer, opts ...Option) (*Postarius, error) {
+func New(store Store, queue Queue, opts ...Option) (*Postarius, error) {
 	if store == nil {
 		return nil, errors.New("postera: New: store must not be nil")
 	}
-	if enqueuer == nil {
-		return nil, errors.New("postera: New: enqueuer must not be nil")
+	if queue == nil {
+		return nil, errors.New("postera: New: queue must not be nil")
 	}
-	p := &Postarius{store: store, enqueuer: enqueuer}
+	p := &Postarius{store: store, queue: queue}
 	for _, opt := range opts {
 		if err := opt(p); err != nil {
 			return nil, err
@@ -208,13 +208,13 @@ func (p *Postarius) Create(ctx context.Context, args CreateArgs) (Posterum, erro
 	posterum.ID = generateID()
 	posterum.CreatedAt = time.Now().UTC()
 
-	if err := p.enqueuer.Enqueue(ctx, posterum); err != nil {
+	if err := p.queue.Enqueue(ctx, posterum); err != nil {
 		return Posterum{}, fmt.Errorf("postera: enqueue: %w", err)
 	}
 
 	if err := p.store.Save(ctx, posterum); err != nil {
 		// rollback: best-effort cancel; if the cancel also fails, both errors are surfaced to the caller
-		rollback := p.enqueuer.Cancel(context.WithoutCancel(ctx), posterum.ID)
+		rollback := p.queue.Cancel(context.WithoutCancel(ctx), posterum.ID)
 		if rollback != nil {
 			return Posterum{}, errors.Join(
 				fmt.Errorf("postera: create: %w", err),
@@ -287,14 +287,14 @@ func (p *Postarius) Cancel(ctx context.Context, id string) error {
 		return fmt.Errorf("postera: cancel: posterum not found: %w", ErrNotFound)
 	}
 
-	if err := p.enqueuer.Cancel(ctx, id); err != nil {
+	if err := p.queue.Cancel(ctx, id); err != nil {
 		return fmt.Errorf("postera: cancel: %w", err)
 	}
 
 	if err := p.store.Remove(context.WithoutCancel(ctx), id); err != nil {
 		// rollback: best-effort re-enqueue; if posterum.TriggerAt is in the past,
 		// Cloud Tasks will dispatch the task immediately rather than restoring the original schedule.
-		rollback := p.enqueuer.Enqueue(context.WithoutCancel(ctx), posterum)
+		rollback := p.queue.Enqueue(context.WithoutCancel(ctx), posterum)
 		if rollback != nil {
 			return errors.Join(
 				fmt.Errorf("postera: cancel: %w", err),

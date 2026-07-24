@@ -41,35 +41,35 @@ func (s *captureStore) List(_ context.Context, q Query) ([]Posterum, error) {
 	return nil, nil
 }
 
-type captureEnqueuer struct {
+type captureQueue struct {
 	enqueued   Posterum
 	canceledID string
 }
 
-func (e *captureEnqueuer) Enqueue(_ context.Context, p Posterum) error {
+func (e *captureQueue) Enqueue(_ context.Context, p Posterum) error {
 	e.enqueued = p
 	return nil
 }
 
-func (e *captureEnqueuer) Cancel(_ context.Context, id string) error {
+func (e *captureQueue) Cancel(_ context.Context, id string) error {
 	e.canceledID = id
 	return nil
 }
 
-func newPostarius(t *testing.T, opts ...Option) (*Postarius, *captureStore, *captureEnqueuer) {
+func newPostarius(t *testing.T, opts ...Option) (*Postarius, *captureStore, *captureQueue) {
 	t.Helper()
 	store := &captureStore{}
-	enqueuer := &captureEnqueuer{}
-	p, err := New(store, enqueuer, opts...)
+	queue := &captureQueue{}
+	p, err := New(store, queue, opts...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return p, store, enqueuer
+	return p, store, queue
 }
 
-func mustNew(t *testing.T, store Store, enqueuer Enqueuer, opts ...Option) *Postarius {
+func mustNew(t *testing.T, store Store, queue Queue, opts ...Option) *Postarius {
 	t.Helper()
-	p, err := New(store, enqueuer, opts...)
+	p, err := New(store, queue, opts...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -78,7 +78,7 @@ func mustNew(t *testing.T, store Store, enqueuer Enqueuer, opts ...Option) *Post
 
 func TestCreateParsesLocalTimeWithDefaultTimezone(t *testing.T) {
 	loc, _ := time.LoadLocation("Asia/Jakarta")
-	p, store, enqueuer := newPostarius(t, WithDefaultTimezone(loc))
+	p, store, queue := newPostarius(t, WithDefaultTimezone(loc))
 
 	got, err := p.Create(context.Background(), CreateArgs{
 		Message:   "follow up",
@@ -101,7 +101,7 @@ func TestCreateParsesLocalTimeWithDefaultTimezone(t *testing.T) {
 	if !reflect.DeepEqual(store.saved, got) {
 		t.Fatalf("saved posterum mismatch")
 	}
-	if !reflect.DeepEqual(enqueuer.enqueued, got) {
+	if !reflect.DeepEqual(queue.enqueued, got) {
 		t.Fatalf("enqueued posterum mismatch")
 	}
 }
@@ -263,15 +263,15 @@ func TestListUpcomingBuildsQueryFromContext(t *testing.T) {
 func TestCancelCallsEnqueueCancelAndStoreRemove(t *testing.T) {
 	posterum := Posterum{ID: "pstr_1", Message: "hello", TriggerAt: time.Now().Add(time.Hour)}
 	store := &captureStore{get: posterum}
-	enqueuer := &captureEnqueuer{}
-	p := mustNew(t, store, enqueuer)
+	queue := &captureQueue{}
+	p := mustNew(t, store, queue)
 
 	err := p.Cancel(context.Background(), "pstr_1")
 	if err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if enqueuer.canceledID != "pstr_1" {
-		t.Fatalf("enqueuer.Cancel not called with correct ID: %q", enqueuer.canceledID)
+	if queue.canceledID != "pstr_1" {
+		t.Fatalf("queue.Cancel not called with correct ID: %q", queue.canceledID)
 	}
 }
 
@@ -280,7 +280,7 @@ func TestCancelScopedToContextIdentity(t *testing.T) {
 
 	t.Run("matching identity cancels", func(t *testing.T) {
 		store := &captureStore{get: posterum}
-		enq := &captureEnqueuer{}
+		enq := &captureQueue{}
 		p := mustNew(t, store, enq, WithHumanFromContext(humanKey{}), WithAgentFromContext(agentKey{}))
 
 		ctx := context.WithValue(context.Background(), humanKey{}, "human-1")
@@ -289,13 +289,13 @@ func TestCancelScopedToContextIdentity(t *testing.T) {
 			t.Fatalf("Cancel: %v", err)
 		}
 		if enq.canceledID != "pstr_1" {
-			t.Fatal("expected enqueuer.Cancel to be called for in-scope posterum")
+			t.Fatal("expected queue.Cancel to be called for in-scope posterum")
 		}
 	})
 
 	t.Run("mismatched identity returns not found and does not cancel", func(t *testing.T) {
 		store := &captureStore{get: posterum}
-		enq := &captureEnqueuer{}
+		enq := &captureQueue{}
 		p := mustNew(t, store, enq, WithHumanFromContext(humanKey{}))
 
 		ctx := context.WithValue(context.Background(), humanKey{}, "human-2")
@@ -304,13 +304,13 @@ func TestCancelScopedToContextIdentity(t *testing.T) {
 			t.Fatalf("want ErrNotFound for out-of-scope posterum, got %v", err)
 		}
 		if enq.canceledID != "" {
-			t.Fatal("enqueuer.Cancel must not be called for out-of-scope posterum")
+			t.Fatal("queue.Cancel must not be called for out-of-scope posterum")
 		}
 	})
 
 	t.Run("no identity in context cancels any", func(t *testing.T) {
 		store := &captureStore{get: posterum}
-		enq := &captureEnqueuer{}
+		enq := &captureQueue{}
 		p := mustNew(t, store, enq, WithHumanFromContext(humanKey{}))
 
 		if err := p.Cancel(context.Background(), "pstr_1"); err != nil {
@@ -324,7 +324,7 @@ func TestCancelScopedToContextIdentity(t *testing.T) {
 
 func TestCancelNotFoundError(t *testing.T) {
 	store := &captureStore{getErr: ErrNotFound}
-	p := mustNew(t, store, &captureEnqueuer{})
+	p := mustNew(t, store, &captureQueue{})
 
 	err := p.Cancel(context.Background(), "pstr_1")
 	if !errors.Is(err, ErrNotFound) {
@@ -359,7 +359,7 @@ func attrValue(r slog.Record, key string) (string, bool) {
 
 func TestIdentityWarnsWhenKeyConfiguredButContextEmpty(t *testing.T) {
 	h := &recordingHandler{}
-	p := mustNew(t, &captureStore{}, &captureEnqueuer{},
+	p := mustNew(t, &captureStore{}, &captureQueue{},
 		WithHumanFromContext(humanKey{}),
 		WithLogger(slog.New(h)),
 	)
@@ -385,7 +385,7 @@ func TestIdentityWarnsWhenKeyConfiguredButContextEmpty(t *testing.T) {
 
 func TestIdentitySilentWhenKeyNotConfigured(t *testing.T) {
 	h := &recordingHandler{}
-	p := mustNew(t, &captureStore{}, &captureEnqueuer{}, WithLogger(slog.New(h)))
+	p := mustNew(t, &captureStore{}, &captureQueue{}, WithLogger(slog.New(h)))
 
 	if _, err := p.ListUpcoming(context.Background()); err != nil {
 		t.Fatalf("ListUpcoming: %v", err)
@@ -397,7 +397,7 @@ func TestIdentitySilentWhenKeyNotConfigured(t *testing.T) {
 
 func TestIdentitySilentWhenContextValuePresent(t *testing.T) {
 	h := &recordingHandler{}
-	p := mustNew(t, &captureStore{}, &captureEnqueuer{},
+	p := mustNew(t, &captureStore{}, &captureQueue{},
 		WithHumanFromContext(humanKey{}),
 		WithLogger(slog.New(h)),
 	)
