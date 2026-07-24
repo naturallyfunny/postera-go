@@ -58,7 +58,7 @@ func WithRetry(maxAttempts int, baseDelay time.Duration) Option {
 
 func NewStore(ctx context.Context, db Querier, opts ...Option) (*Store, error) {
 	if db == nil {
-		panic("postgres: NewStore called with nil Querier")
+		return nil, errors.New("postgres: NewStore: db must not be nil")
 	}
 	s := &Store{db: db}
 	for _, opt := range opts {
