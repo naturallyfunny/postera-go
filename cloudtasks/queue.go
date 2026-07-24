@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"time"
 
 	cloudtaskspkg "cloud.google.com/go/cloudtasks/apiv2"
 	taskspb "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
+	gax "github.com/googleapis/gax-go/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -31,22 +33,55 @@ type headerMapping struct {
 	get        func(postera.Posterum) string
 }
 
+// taskClient is the subset of *cloudtasks.Client that Queue uses, letting tests
+// substitute a fake.
+type taskClient interface {
+	CreateTask(context.Context, *taskspb.CreateTaskRequest, ...gax.CallOption) (*taskspb.Task, error)
+	DeleteTask(context.Context, *taskspb.DeleteTaskRequest, ...gax.CallOption) error
+}
+
 type Queue struct {
-	client              *cloudtaskspkg.Client
+	client              taskClient
 	queuePath           string
 	targetURL           string
 	serviceAccountEmail string
 	headers             []headerMapping
+	maxAttempts         int
+	baseDelay           time.Duration
 }
 
 type Option func(*Queue) error
 
-func WithTargetURL(url string) Option {
+func WithTargetURL(targetURL string) Option {
 	return func(q *Queue) error {
-		if url == "" {
+		if targetURL == "" {
 			return errors.New("cloudtasks: WithTargetURL: empty url")
 		}
-		q.targetURL = url
+		u, err := url.Parse(targetURL)
+		if err != nil {
+			return fmt.Errorf("cloudtasks: WithTargetURL: %q is not a valid URL: %w", targetURL, err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("cloudtasks: WithTargetURL: %q must use an http or https scheme", targetURL)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("cloudtasks: WithTargetURL: %q must include a host", targetURL)
+		}
+		q.targetURL = targetURL
+		return nil
+	}
+}
+
+// WithRetry retries transient gRPC failures (Unavailable, DeadlineExceeded,
+// ResourceExhausted, Aborted) up to maxAttempts times, doubling baseDelay
+// between tries. Off by default.
+func WithRetry(maxAttempts int, baseDelay time.Duration) Option {
+	return func(q *Queue) error {
+		if maxAttempts < 1 {
+			return fmt.Errorf("cloudtasks: WithRetry: maxAttempts must be >= 1, got %d", maxAttempts)
+		}
+		q.maxAttempts = maxAttempts
+		q.baseDelay = baseDelay
 		return nil
 	}
 }
@@ -182,7 +217,11 @@ func (q *Queue) Enqueue(ctx context.Context, p postera.Posterum) error {
 		},
 	}
 
-	if _, err := q.client.CreateTask(ctx, req); err != nil {
+	err := q.do(ctx, func() error {
+		_, err := q.client.CreateTask(ctx, req)
+		return err
+	})
+	if err != nil {
 		if status.Code(err) == codes.AlreadyExists {
 			// task name is derived from Posterum.ID; duplicate enqueues are safe to ignore
 			return nil
@@ -196,13 +235,49 @@ func (q *Queue) Cancel(ctx context.Context, id string) error {
 	req := &taskspb.DeleteTaskRequest{
 		Name: q.taskName(id),
 	}
-	if err := q.client.DeleteTask(ctx, req); err != nil {
+	err := q.do(ctx, func() error {
+		return q.client.DeleteTask(ctx, req)
+	})
+	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			return nil
 		}
 		return fmt.Errorf("cloudtasks: delete task %s: %w", id, err)
 	}
 	return nil
+}
+
+// do runs op, retrying transient gRPC failures per the WithRetry config.
+func (q *Queue) do(ctx context.Context, op func() error) error {
+	attempts := q.maxAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	delay := q.baseDelay
+	for attempt := 1; ; attempt++ {
+		err := op()
+		if err == nil {
+			return nil
+		}
+		if attempt >= attempts || !retryable(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(delay):
+		}
+		delay *= 2
+	}
+}
+
+func retryable(err error) bool {
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Aborted:
+		return true
+	default:
+		return false
+	}
 }
 
 func (q *Queue) taskName(id string) string {

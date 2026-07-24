@@ -58,6 +58,7 @@ import "go.naturallyfunny.dev/postera/postgres"
 
 store, _ := postgres.NewStore(ctx, dbPool,
     postgres.WithAutoMigrate(),
+    postgres.WithRetry(3, 100*time.Millisecond), // optional; off by default
 )
 ```
 
@@ -78,6 +79,7 @@ queue, _ := cloudtasks.NewQueue(client, "my-project", "us-central1", "my-queue",
     cloudtasks.WithAgentHeader("x-postera-agent"),
     cloudtasks.WithSessionHeader("x-postera-session"),
     cloudtasks.WithMetadataHeader("timezone", "x-postera-timezone"),
+    cloudtasks.WithRetry(3, 100*time.Millisecond), // optional; off by default
 )
 ```
 
@@ -180,10 +182,16 @@ What Postera gives you is the *plumbing* to make that enforcement easy on your s
 
 These are known gaps to be aware of before using Postera in a production environment:
 
-- **No retry on transient errors**: Calls to Cloud Tasks (`Enqueue`, `Cancel`) and the Store are not retried on transient failures (e.g., gRPC `Unavailable`, network timeouts). Callers are responsible for wrapping with their own retry/backoff logic.
 - **Minimal observability**: There are no metrics or tracing hooks, and no operational logging of enqueue rates or latency — those require an external wrapper. The only built-in log is an optional diagnostic: pass `postera.WithLogger(slog.Logger)` and Postarius emits a `Warn` when an identity key is configured but its context value is empty (a likely sign context was not populated, leaving the operation unscoped). It is silent without `WithLogger`, and it diagnoses the misconfiguration rather than preventing it.
-- **Remove rollback fires immediately on past schedules**: If `store.Remove` fails after `queue.Cancel` succeeds, the rollback re-enqueues the original `Posterum`. If `TriggerAt` is already in the past, Cloud Tasks will dispatch the task immediately rather than restoring the original schedule.
-- **Target URL is not format-validated**: `WithTargetURL` only rejects empty strings. A malformed URL will be accepted at construction time and rejected later by the Cloud Tasks API with a less informative error.
+- **Cancel can leave the store and queue diverged**: `Cancel` deletes the queued task first, then removes the store record. If the store removal fails, Postera attempts a best-effort rollback that re-enqueues the task — but only when `TriggerAt` is still in the future. If it is already in the past (so rescheduling is impossible), the rollback is **skipped** and `Cancel` returns an explicit error stating the posterum remains stored but is no longer scheduled and will not fire. It never re-enqueues a past trigger for immediate dispatch. Reconciling that divergence (retrying the removal, or treating the record as stale) is left to the caller.
+
+### Transient-error retries (opt-in)
+
+Retrying transient failures — gRPC `Unavailable`/`DeadlineExceeded` on Cloud Tasks, or connection errors, serialization failures, and deadlocks on the Store — is **off by default**. Each implementation owns its own retry: enable it with `cloudtasks.WithRetry(maxAttempts, baseDelay)` or `postgres.WithRetry(maxAttempts, baseDelay)`, which retries up to `maxAttempts` times with a doubling backoff. Only transient errors are retried; permanent ones (invalid arguments, missing target URL, schedule out of range, `ErrNotFound`, constraint violations) are surfaced immediately. All retried operations are idempotent (Cloud Tasks tasks are keyed by posterum ID; the Store `Save` is an upsert and `Remove` is idempotent), so retries are safe.
+
+### Input validation
+
+`WithTargetURL` validates its argument at construction time: it must be a parseable absolute URL with an `http`/`https` scheme and a host, so a malformed target is rejected by `NewQueue` rather than later by the Cloud Tasks API with a less informative error.
 
 ## Roadmap
 

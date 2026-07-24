@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,11 +16,12 @@ type sessionKey struct{}
 type timezoneKey struct{}
 
 type captureStore struct {
-	saved   Posterum
-	queried Query
-	getID   string
-	getErr  error
-	get     Posterum
+	saved     Posterum
+	queried   Query
+	getID     string
+	getErr    error
+	get       Posterum
+	removeErr error
 }
 
 func (s *captureStore) Save(_ context.Context, p Posterum) error {
@@ -33,7 +35,7 @@ func (s *captureStore) Get(_ context.Context, id string) (Posterum, error) {
 }
 
 func (s *captureStore) Remove(context.Context, string) error {
-	return nil
+	return s.removeErr
 }
 
 func (s *captureStore) List(_ context.Context, q Query) ([]Posterum, error) {
@@ -42,12 +44,14 @@ func (s *captureStore) List(_ context.Context, q Query) ([]Posterum, error) {
 }
 
 type captureQueue struct {
-	enqueued   Posterum
-	canceledID string
+	enqueued      Posterum
+	enqueueCalled bool
+	canceledID    string
 }
 
 func (e *captureQueue) Enqueue(_ context.Context, p Posterum) error {
 	e.enqueued = p
+	e.enqueueCalled = true
 	return nil
 }
 
@@ -329,6 +333,51 @@ func TestCancelNotFoundError(t *testing.T) {
 	err := p.Cancel(context.Background(), "pstr_1")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+func TestCancelRollbackSkipsReEnqueueForPastTrigger(t *testing.T) {
+	removeErr := errors.New("store unavailable")
+	// TriggerAt already in the past: the rollback must NOT re-enqueue, since it
+	// cannot restore the original schedule and would risk immediate dispatch.
+	posterum := Posterum{ID: "pstr_1", Message: "hello", TriggerAt: time.Now().Add(-time.Hour)}
+	store := &captureStore{get: posterum, removeErr: removeErr}
+	queue := &captureQueue{}
+	p := mustNew(t, store, queue)
+
+	err := p.Cancel(context.Background(), "pstr_1")
+	if err == nil {
+		t.Fatal("expected error when store.Remove fails, got nil")
+	}
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("error should wrap the store failure, got: %v", err)
+	}
+	if queue.enqueueCalled {
+		t.Fatal("rollback must not re-enqueue a past-trigger posterum")
+	}
+	for _, want := range []string{"remains stored", "will not fire"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error should describe the divergence (%q), got: %v", want, err)
+		}
+	}
+}
+
+func TestCancelRollbackReEnqueuesFutureTrigger(t *testing.T) {
+	removeErr := errors.New("store unavailable")
+	posterum := Posterum{ID: "pstr_1", Message: "hello", TriggerAt: time.Now().Add(time.Hour)}
+	store := &captureStore{get: posterum, removeErr: removeErr}
+	queue := &captureQueue{}
+	p := mustNew(t, store, queue)
+
+	err := p.Cancel(context.Background(), "pstr_1")
+	if !errors.Is(err, removeErr) {
+		t.Fatalf("error should wrap the store failure, got: %v", err)
+	}
+	if !queue.enqueueCalled {
+		t.Fatal("rollback should re-enqueue a still-future posterum")
+	}
+	if queue.enqueued.ID != "pstr_1" {
+		t.Fatalf("re-enqueued wrong posterum: %q", queue.enqueued.ID)
 	}
 }
 

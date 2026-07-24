@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -28,13 +29,30 @@ type Querier interface {
 type Store struct {
 	db          Querier
 	autoMigrate bool
+	maxAttempts int
+	baseDelay   time.Duration
 }
 
-type Option func(*Store)
+type Option func(*Store) error
 
 func WithAutoMigrate() Option {
-	return func(s *Store) {
+	return func(s *Store) error {
 		s.autoMigrate = true
+		return nil
+	}
+}
+
+// WithRetry retries transient failures (connection errors, serialization
+// failures, deadlocks) up to maxAttempts times, doubling baseDelay between
+// tries. Off by default.
+func WithRetry(maxAttempts int, baseDelay time.Duration) Option {
+	return func(s *Store) error {
+		if maxAttempts < 1 {
+			return fmt.Errorf("postgres: WithRetry: maxAttempts must be >= 1, got %d", maxAttempts)
+		}
+		s.maxAttempts = maxAttempts
+		s.baseDelay = baseDelay
+		return nil
 	}
 }
 
@@ -44,7 +62,9 @@ func NewStore(ctx context.Context, db Querier, opts ...Option) (*Store, error) {
 	}
 	s := &Store{db: db}
 	for _, opt := range opts {
-		opt(s)
+		if err := opt(s); err != nil {
+			return nil, err
+		}
 	}
 
 	if s.autoMigrate {
@@ -65,8 +85,9 @@ func (s *Store) Save(ctx context.Context, p postera.Posterum) error {
 	if err != nil {
 		return fmt.Errorf("postgres: save %s: metadata: %w", p.ID, err)
 	}
-	_, err = s.db.Exec(ctx,
-		`INSERT INTO `+s.tableRef()+` (id, message, human, agent, session, metadata, trigger_at, created_at)
+	err = s.do(ctx, func() error {
+		_, e := s.db.Exec(ctx,
+			`INSERT INTO `+s.tableRef()+` (id, message, human, agent, session, metadata, trigger_at, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (id) DO UPDATE
 			SET message    = EXCLUDED.message,
@@ -75,15 +96,17 @@ func (s *Store) Save(ctx context.Context, p postera.Posterum) error {
 			    session    = EXCLUDED.session,
 			    metadata   = EXCLUDED.metadata,
 			    trigger_at = EXCLUDED.trigger_at`,
-		p.ID,
-		p.Message,
-		p.Human,
-		p.Agent,
-		p.Session,
-		metadata,
-		p.TriggerAt.UTC(),
-		p.CreatedAt.UTC(),
-	)
+			p.ID,
+			p.Message,
+			p.Human,
+			p.Agent,
+			p.Session,
+			metadata,
+			p.TriggerAt.UTC(),
+			p.CreatedAt.UTC(),
+		)
+		return e
+	})
 	if err != nil {
 		return fmt.Errorf("postgres: save %s: %w", p.ID, err)
 	}
@@ -91,11 +114,6 @@ func (s *Store) Save(ctx context.Context, p postera.Posterum) error {
 }
 
 func (s *Store) Get(ctx context.Context, id string) (postera.Posterum, error) {
-	row := s.db.QueryRow(ctx,
-		`SELECT id, message, human, agent, session, metadata, trigger_at, created_at FROM `+s.tableRef()+` WHERE id = $1`,
-		id,
-	)
-
 	var (
 		p         postera.Posterum
 		human     pgtype.Text
@@ -105,7 +123,14 @@ func (s *Store) Get(ctx context.Context, id string) (postera.Posterum, error) {
 		triggerAt time.Time
 		createdAt time.Time
 	)
-	if err := row.Scan(&p.ID, &p.Message, &human, &agent, &session, &metadata, &triggerAt, &createdAt); err != nil {
+	err := s.do(ctx, func() error {
+		row := s.db.QueryRow(ctx,
+			`SELECT id, message, human, agent, session, metadata, trigger_at, created_at FROM `+s.tableRef()+` WHERE id = $1`,
+			id,
+		)
+		return row.Scan(&p.ID, &p.Message, &human, &agent, &session, &metadata, &triggerAt, &createdAt)
+	})
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return postera.Posterum{}, fmt.Errorf("postgres: get %s: %w", id, postera.ErrNotFound)
 		}
@@ -123,7 +148,12 @@ func (s *Store) Get(ctx context.Context, id string) (postera.Posterum, error) {
 }
 
 func (s *Store) Remove(ctx context.Context, id string) error {
-	tag, err := s.db.Exec(ctx, `DELETE FROM `+s.tableRef()+` WHERE id = $1`, id)
+	var tag pgconn.CommandTag
+	err := s.do(ctx, func() error {
+		var e error
+		tag, e = s.db.Exec(ctx, `DELETE FROM `+s.tableRef()+` WHERE id = $1`, id)
+		return e
+	})
 	if err != nil {
 		return fmt.Errorf("postgres: remove %s: %w", id, err)
 	}
@@ -136,37 +166,41 @@ func (s *Store) Remove(ctx context.Context, id string) error {
 func (s *Store) List(ctx context.Context, q postera.Query) ([]postera.Posterum, error) {
 	sql, args := s.listQuery(q)
 
-	rows, err := s.db.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, fmt.Errorf("postgres: list: %w", err)
-	}
-	defer rows.Close()
-
 	var result []postera.Posterum
-	for rows.Next() {
-		var (
-			p         postera.Posterum
-			human     pgtype.Text
-			agent     pgtype.Text
-			session   pgtype.Text
-			metadata  []byte
-			triggerAt time.Time
-			createdAt time.Time
-		)
-		if err := rows.Scan(&p.ID, &p.Message, &human, &agent, &session, &metadata, &triggerAt, &createdAt); err != nil {
-			return nil, fmt.Errorf("postgres: list: %w", err)
+	err := s.do(ctx, func() error {
+		result = nil
+		rows, err := s.db.Query(ctx, sql, args...)
+		if err != nil {
+			return err
 		}
-		p.Human = human.String
-		p.Agent = agent.String
-		p.Session = session.String
-		if err := setMetadata(&p, metadata); err != nil {
-			return nil, fmt.Errorf("postgres: list: metadata: %w", err)
+		defer rows.Close()
+
+		for rows.Next() {
+			var (
+				p         postera.Posterum
+				human     pgtype.Text
+				agent     pgtype.Text
+				session   pgtype.Text
+				metadata  []byte
+				triggerAt time.Time
+				createdAt time.Time
+			)
+			if err := rows.Scan(&p.ID, &p.Message, &human, &agent, &session, &metadata, &triggerAt, &createdAt); err != nil {
+				return err
+			}
+			p.Human = human.String
+			p.Agent = agent.String
+			p.Session = session.String
+			if err := setMetadata(&p, metadata); err != nil {
+				return fmt.Errorf("metadata: %w", err)
+			}
+			p.TriggerAt = triggerAt.UTC()
+			p.CreatedAt = createdAt.UTC()
+			result = append(result, p)
 		}
-		p.TriggerAt = triggerAt.UTC()
-		p.CreatedAt = createdAt.UTC()
-		result = append(result, p)
-	}
-	if err := rows.Err(); err != nil {
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("postgres: list: %w", err)
 	}
 	return result, nil
@@ -243,6 +277,53 @@ func (s *Store) validateSchema(ctx context.Context) error {
 
 func (s *Store) tableRef() string {
 	return pgx.Identifier{"postera"}.Sanitize()
+}
+
+// do runs op, retrying transient failures per the WithRetry config.
+func (s *Store) do(ctx context.Context, op func() error) error {
+	attempts := s.maxAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	delay := s.baseDelay
+	for attempt := 1; ; attempt++ {
+		err := op()
+		if err == nil {
+			return nil
+		}
+		if attempt >= attempts || !retryable(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(delay):
+		}
+		delay *= 2
+	}
+}
+
+func retryable(err error) bool {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false
+	}
+	if pgconn.SafeToRetry(err) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch {
+		case strings.HasPrefix(pgErr.Code, "08"), // connection exception
+			pgErr.Code == "40001", // serialization_failure
+			pgErr.Code == "40P01", // deadlock_detected
+			pgErr.Code == "53300", // too_many_connections
+			pgErr.Code == "57P01": // admin_shutdown
+			return true
+		}
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func metadataToJSON(metadata map[string]string) (any, error) {

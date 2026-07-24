@@ -1,8 +1,15 @@
 package cloudtasks
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
+
+	taskspb "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
+	gax "github.com/googleapis/gax-go/v2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"go.naturallyfunny.dev/postera"
 )
@@ -12,6 +19,126 @@ func validPosterum() postera.Posterum {
 		ID:        "task-1",
 		Message:   "hello",
 		TriggerAt: time.Date(2026, 6, 11, 9, 0, 0, 0, time.UTC),
+	}
+}
+
+// fakeTaskClient fails the first failCreate/failDelete calls, then succeeds.
+type fakeTaskClient struct {
+	createCalls int
+	deleteCalls int
+	failCreate  int
+	failDelete  int
+	createErr   error
+	deleteErr   error
+}
+
+func (f *fakeTaskClient) CreateTask(context.Context, *taskspb.CreateTaskRequest, ...gax.CallOption) (*taskspb.Task, error) {
+	f.createCalls++
+	if f.createCalls <= f.failCreate {
+		return nil, f.createErr
+	}
+	return &taskspb.Task{}, nil
+}
+
+func (f *fakeTaskClient) DeleteTask(context.Context, *taskspb.DeleteTaskRequest, ...gax.CallOption) error {
+	f.deleteCalls++
+	if f.deleteCalls <= f.failDelete {
+		return f.deleteErr
+	}
+	return nil
+}
+
+func futurePosterum() postera.Posterum {
+	return postera.Posterum{
+		ID:        "task-1",
+		Message:   "hello",
+		TriggerAt: time.Now().Add(time.Hour),
+	}
+}
+
+func TestEnqueueRetriesTransientErrors(t *testing.T) {
+	fake := &fakeTaskClient{failCreate: 2, createErr: status.Error(codes.Unavailable, "boom")}
+	q := &Queue{
+		client:      fake,
+		queuePath:   "projects/p/locations/l/queues/q",
+		targetURL:   "https://example.test/awaken",
+		maxAttempts: 5,
+	}
+
+	if err := q.Enqueue(context.Background(), futurePosterum()); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	if fake.createCalls != 3 {
+		t.Fatalf("want 3 CreateTask calls (2 transient + 1 success), got %d", fake.createCalls)
+	}
+}
+
+func TestEnqueueNoRetryWithoutPolicy(t *testing.T) {
+	fake := &fakeTaskClient{failCreate: 1, createErr: status.Error(codes.Unavailable, "boom")}
+	q := &Queue{
+		client:    fake,
+		queuePath: "projects/p/locations/l/queues/q",
+		targetURL: "https://example.test/awaken",
+	}
+
+	err := q.Enqueue(context.Background(), futurePosterum())
+	if err == nil {
+		t.Fatal("expected error without retry policy, got nil")
+	}
+	if fake.createCalls != 1 {
+		t.Fatalf("want a single CreateTask call without WithRetry, got %d", fake.createCalls)
+	}
+}
+
+func TestEnqueueDoesNotRetryPermanentErrors(t *testing.T) {
+	fake := &fakeTaskClient{failCreate: 5, createErr: status.Error(codes.InvalidArgument, "bad")}
+	q := &Queue{
+		client:      fake,
+		queuePath:   "projects/p/locations/l/queues/q",
+		targetURL:   "https://example.test/awaken",
+		maxAttempts: 5,
+	}
+
+	err := q.Enqueue(context.Background(), futurePosterum())
+	if err == nil {
+		t.Fatal("expected error for InvalidArgument, got nil")
+	}
+	if fake.createCalls != 1 {
+		t.Fatalf("permanent error must not be retried, got %d calls", fake.createCalls)
+	}
+}
+
+func TestCancelRetriesTransientErrors(t *testing.T) {
+	fake := &fakeTaskClient{failDelete: 2, deleteErr: status.Error(codes.Unavailable, "boom")}
+	q := &Queue{
+		client:      fake,
+		queuePath:   "projects/p/locations/l/queues/q",
+		maxAttempts: 5,
+	}
+
+	if err := q.Cancel(context.Background(), "task-1"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if fake.deleteCalls != 3 {
+		t.Fatalf("want 3 DeleteTask calls, got %d", fake.deleteCalls)
+	}
+}
+
+func TestCancelRetryExhaustionSurfacesError(t *testing.T) {
+	sentinel := status.Error(codes.Unavailable, "boom")
+	fake := &fakeTaskClient{failDelete: 10, deleteErr: sentinel}
+	q := &Queue{
+		client:      fake,
+		queuePath:   "projects/p/locations/l/queues/q",
+		maxAttempts: 3,
+	}
+
+	err := q.Cancel(context.Background(), "task-1")
+	if err == nil || !errors.Is(err, sentinel) {
+		t.Fatalf("want surfaced Unavailable error, got %v", err)
+	}
+	if fake.deleteCalls != 3 {
+		t.Fatalf("want 3 DeleteTask attempts before giving up, got %d", fake.deleteCalls)
 	}
 }
 

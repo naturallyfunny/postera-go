@@ -292,8 +292,13 @@ func (p *Postarius) Cancel(ctx context.Context, id string) error {
 	}
 
 	if err := p.store.Remove(context.WithoutCancel(ctx), id); err != nil {
-		// rollback: best-effort re-enqueue; if posterum.TriggerAt is in the past,
-		// Cloud Tasks will dispatch the task immediately rather than restoring the original schedule.
+		// A past trigger can't be rescheduled, so don't re-enqueue it (that would
+		// either be rejected or dispatch immediately); report the divergence.
+		if !posterum.TriggerAt.After(time.Now()) {
+			return fmt.Errorf("postera: cancel: %w: posterum %s removed from the queue but not from the store and cannot be rescheduled (trigger %s is in the past); it remains stored but will not fire",
+				err, id, posterum.TriggerAt)
+		}
+
 		rollback := p.queue.Enqueue(context.WithoutCancel(ctx), posterum)
 		if rollback != nil {
 			return errors.Join(

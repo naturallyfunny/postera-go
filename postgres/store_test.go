@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -323,4 +324,101 @@ func TestGetMetadataNilAndEmptyMap(t *testing.T) {
 			}
 		})
 	}
+}
+
+// execFailingDB fails the first failN Exec calls with failErr, then succeeds.
+type execFailingDB struct {
+	calls   int
+	failN   int
+	failErr error
+}
+
+func (db *execFailingDB) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	db.calls++
+	if db.calls <= db.failN {
+		return pgconn.CommandTag{}, db.failErr
+	}
+	return pgconn.NewCommandTag("INSERT 0 1"), nil
+}
+
+func (db *execFailingDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	panic("unexpected Query")
+}
+
+func (db *execFailingDB) QueryRow(context.Context, string, ...any) pgx.Row {
+	panic("unexpected QueryRow")
+}
+
+func savePosterum() postera.Posterum {
+	return postera.Posterum{
+		ID:        "pstr_1",
+		Message:   "hello",
+		TriggerAt: time.Date(2026, 6, 11, 9, 0, 0, 0, time.UTC),
+		CreatedAt: time.Date(2026, 6, 10, 9, 0, 0, 0, time.UTC),
+	}
+}
+
+func TestSaveRetriesTransientErrors(t *testing.T) {
+	db := &execFailingDB{failN: 2, failErr: &pgconn.PgError{Code: "40001", Message: "serialization failure"}}
+	s := &Store{db: db, maxAttempts: 5}
+
+	if err := s.Save(context.Background(), savePosterum()); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if db.calls != 3 {
+		t.Fatalf("want 3 Exec calls (2 transient + 1 success), got %d", db.calls)
+	}
+}
+
+func TestSaveNoRetryWithoutPolicy(t *testing.T) {
+	db := &execFailingDB{failN: 1, failErr: &pgconn.PgError{Code: "40001", Message: "serialization failure"}}
+	s := &Store{db: db}
+
+	if err := s.Save(context.Background(), savePosterum()); err == nil {
+		t.Fatal("expected error without retry policy, got nil")
+	}
+	if db.calls != 1 {
+		t.Fatalf("want a single Exec call without WithRetry, got %d", db.calls)
+	}
+}
+
+func TestSaveDoesNotRetryPermanentErrors(t *testing.T) {
+	// 23505 is unique_violation — a programming/data error, not transient.
+	db := &execFailingDB{failN: 5, failErr: &pgconn.PgError{Code: "23505", Message: "duplicate key"}}
+	s := &Store{db: db, maxAttempts: 5}
+
+	if err := s.Save(context.Background(), savePosterum()); err == nil {
+		t.Fatal("expected error for unique violation, got nil")
+	}
+	if db.calls != 1 {
+		t.Fatalf("permanent error must not be retried, got %d calls", db.calls)
+	}
+}
+
+func TestRemoveDoesNotRetryNotFound(t *testing.T) {
+	db := &execZeroRowsDB{}
+	s := &Store{db: db, maxAttempts: 5}
+
+	err := s.Remove(context.Background(), "pstr_missing")
+	if !errors.Is(err, postera.ErrNotFound) {
+		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+	if db.calls != 1 {
+		t.Fatalf("zero-rows result must not be retried, got %d calls", db.calls)
+	}
+}
+
+type execZeroRowsDB struct{ calls int }
+
+func (db *execZeroRowsDB) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	db.calls++
+	return pgconn.NewCommandTag("DELETE 0"), nil
+}
+
+func (db *execZeroRowsDB) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	panic("unexpected Query")
+}
+
+func (db *execZeroRowsDB) QueryRow(context.Context, string, ...any) pgx.Row {
+	panic("unexpected QueryRow")
 }

@@ -142,6 +142,54 @@ func TestNewQueueRejectsEmptyHeaderOption(t *testing.T) {
 	}
 }
 
+func TestWithTargetURLRejectsMalformedURLs(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{name: "not a url", url: "not a url"},
+		{name: "wrong scheme", url: "ftp://host/path"},
+		{name: "relative path", url: "/relative/path"},
+		{name: "no host", url: "https://"},
+		{name: "scheme only", url: "http://"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := cloudtasks.NewQueue(nil, "proj", "us-central1", "q",
+				cloudtasks.WithTargetURL(tc.url))
+			if err == nil {
+				t.Fatalf("expected error for %q, got nil", tc.url)
+			}
+			if !strings.Contains(err.Error(), "WithTargetURL") {
+				t.Fatalf("error should mention WithTargetURL, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestWithTargetURLAcceptsValidURLs(t *testing.T) {
+	for _, u := range []string{"https://example.test/awaken", "http://localhost:8080/hook"} {
+		if _, err := cloudtasks.NewQueue(nil, "proj", "us-central1", "q",
+			cloudtasks.WithTargetURL(u)); err != nil {
+			t.Fatalf("NewQueue with valid URL %q: %v", u, err)
+		}
+	}
+}
+
+func TestWithRetryRejectsInvalidMaxAttempts(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		_, err := cloudtasks.NewQueue(nil, "proj", "us-central1", "q",
+			cloudtasks.WithRetry(n, 0))
+		if err == nil {
+			t.Fatalf("expected error for maxAttempts=%d, got nil", n)
+		}
+		if !strings.Contains(err.Error(), "WithRetry") {
+			t.Fatalf("error should mention WithRetry, got: %v", err)
+		}
+	}
+}
+
 func TestEnqueueRejectsScheduleOutOfRange(t *testing.T) {
 	tests := []struct {
 		name string
