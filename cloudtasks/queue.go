@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	cloudtaskspkg "cloud.google.com/go/cloudtasks/apiv2"
 	taskspb "cloud.google.com/go/cloudtasks/apiv2/cloudtaskspb"
@@ -12,6 +13,17 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"go.naturallyfunny.dev/postera"
+)
+
+const (
+	// minLead is the smallest lead time Enqueue accepts. Scheduling closer than
+	// this is racy: a task can be dispatched before upstream state that produced
+	// it is durably written.
+	minLead = 29 * time.Second
+	// maxLead is the largest lead time Enqueue accepts. Cloud Tasks rejects a
+	// scheduleTime more than 30 days out; 29 days leaves margin for the gap
+	// between this check and CreateTask actually reaching the platform.
+	maxLead = 29 * 24 * time.Hour
 )
 
 type headerMapping struct {
@@ -140,6 +152,10 @@ func NewQueue(client *cloudtaskspkg.Client, project, location, queue string, opt
 func (q *Queue) Enqueue(ctx context.Context, p postera.Posterum) error {
 	if q.targetURL == "" {
 		return errors.New("cloudtasks: enqueue: no target URL configured; use WithTargetURL")
+	}
+	if lead := time.Until(p.TriggerAt); lead <= minLead || lead >= maxLead {
+		return fmt.Errorf("cloudtasks: enqueue %s: trigger %s is %s from now, must be within (%s, %s): %w",
+			p.ID, p.TriggerAt, lead, minLead, maxLead, postera.ErrScheduleOutOfRange)
 	}
 	httpReq := &taskspb.HttpRequest{
 		Url:        q.targetURL,

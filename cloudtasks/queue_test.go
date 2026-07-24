@@ -2,6 +2,7 @@ package cloudtasks_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -138,5 +139,64 @@ func TestNewQueueRejectsEmptyHeaderOption(t *testing.T) {
 				t.Fatalf("error should mention %q, got: %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestEnqueueRejectsScheduleOutOfRange(t *testing.T) {
+	tests := []struct {
+		name string
+		lead time.Duration
+	}{
+		{name: "in the past", lead: -time.Hour},
+		{name: "at now", lead: 0},
+		{name: "just under min lead", lead: 20 * time.Second},
+		{name: "just beyond max lead", lead: 30 * 24 * time.Hour},
+		{name: "far beyond max lead", lead: 365 * 24 * time.Hour},
+	}
+
+	// A configured target URL means the horizon guard is what rejects these;
+	// the nil client is never reached because the guard returns first.
+	enq, err := cloudtasks.NewQueue(nil, "proj", "us-central1", "q",
+		cloudtasks.WithTargetURL("https://example.test/awaken"))
+	if err != nil {
+		t.Fatalf("NewQueue: %v", err)
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := postera.Posterum{
+				ID:        "task-1",
+				Message:   "hello",
+				TriggerAt: time.Now().Add(tc.lead),
+			}
+			err := enq.Enqueue(context.Background(), p)
+			if !errors.Is(err, postera.ErrScheduleOutOfRange) {
+				t.Fatalf("want ErrScheduleOutOfRange, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "task-1") {
+				t.Fatalf("error should mention posterum ID, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestEnqueueTargetURLCheckPrecedesHorizon(t *testing.T) {
+	// Without a target URL, the config error is reported even for an in-range
+	// trigger, so consumers see the actionable misconfiguration first.
+	enq, err := cloudtasks.NewQueue(nil, "proj", "us-central1", "q")
+	if err != nil {
+		t.Fatalf("NewQueue: %v", err)
+	}
+	p := postera.Posterum{
+		ID:        "task-1",
+		Message:   "hello",
+		TriggerAt: time.Now().Add(24 * time.Hour),
+	}
+	err = enq.Enqueue(context.Background(), p)
+	if errors.Is(err, postera.ErrScheduleOutOfRange) {
+		t.Fatalf("want target URL error, got ErrScheduleOutOfRange: %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "WithTargetURL") {
+		t.Fatalf("error should mention WithTargetURL, got: %v", err)
 	}
 }
